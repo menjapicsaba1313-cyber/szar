@@ -270,10 +270,13 @@ for k in "${!RESULTS[@]}"; do
 done
 
 if [[ "$any_fail" -eq 0 ]]; then
-  echo -e "${PURPLE}KÉSZ – minden lépés rendben lefutott.${NC}"
+  echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
   log "Telepítés befejezve: SIKERES"
 
   echo
+  # LILA (magenta) szín
+  PURPLE="\e[35m"
+
   echo -e "${PURPLE}"
   cat << "EOF"
 ██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
