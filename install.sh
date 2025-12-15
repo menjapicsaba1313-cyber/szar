@@ -1,11 +1,15 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-### ====== VIRTUALBOX / MINIMAL FIXEK ======
+############################################
+# VIRTUALBOX / MINIMAL RENDSZER FIXEK
+############################################
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
 
-### ====== KONFIG ======
+############################################
+# KONFIG BETÖLTÉS
+############################################
 CONFIG_FILE="./config.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -25,21 +29,28 @@ fi
 
 LOGFILE="${LOGFILE:-/var/log/showoff_installer.log}"
 
-### ====== SZÍNEK ======
+############################################
+# SZÍNEK
+############################################
 RED="\e[31m"
 GREEN="\e[32m"
 YELLOW="\e[33m"
 BLUE="\e[34m"
 NC="\e[0m"
 
-### ====== ROOT CHECK ======
+############################################
+# ROOT CHECK
+############################################
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  echo -e "${RED}Root jogosultság szükséges. Futtasd így: su - majd ./install.sh${NC}"
+  echo -e "${RED}Root jogosultság szükséges. Futtasd így:${NC}"
+  echo "su -"
+  echo "./install.sh"
   exit 1
 fi
 
-### ====== LOG ELŐKÉSZÍTÉS ======
-# Biztosítsuk, hogy a log könyvtár létezik
+############################################
+# LOG ELŐKÉSZÍTÉS
+############################################
 mkdir -p "$(dirname "$LOGFILE")"
 touch "$LOGFILE" || {
   echo -e "${RED}Nem tudom létrehozni a logot: $LOGFILE${NC}"
@@ -76,31 +87,36 @@ run() {
 
 trap 'fail "A script váratlanul megszakadt (sor: ${BASH_LINENO[0]}). Nézd a logot: '"$LOGFILE"'"' ERR
 
-### ====== BANNER ======
+############################################
+# BANNER
+############################################
 clear
 cat << "EOF"
 =========================================
-  SHOW-OFF SERVER INSTALLER v1.2
+  SHOW-OFF SERVER INSTALLER v1.3
   Apache | Node-RED | MQTT | MariaDB | UFW
-  VirtualBox / Debian / Ubuntu kompatibilis
+  VirtualBox / Debian / Ubuntu STABIL
 =========================================
 EOF
 echo -e "${BLUE}Logfile:${NC} $LOGFILE"
 echo
 
-### ====== APT UPDATE (STABIL) ======
+############################################
+# APT SEGÉDFÜGGVÉNYEK
+############################################
 apt_update() {
   log "APT csomaglista frissítése"
   run apt-get update -y
 }
 
 apt_install() {
-  # használj apt-get-et, scriptből stabilabb
   log "Csomag telepítés: $*"
   run apt-get install -y "$@"
 }
 
-### ====== INSTALL FUNCS ======
+############################################
+# TELEPÍTŐ FUNKCIÓK
+############################################
 install_apache() {
   log "Apache2 telepítés"
   apt_install apache2
@@ -120,13 +136,28 @@ install_node_red() {
   apt_install curl ca-certificates
 
   log "Node-RED telepítés (non-interactive, root confirm)"
-  # --confirm-root: ne álljon meg Enter kérdésnél
-  run bash -c "curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb | bash -s -- --confirm-root"
 
-  # szolgáltatás indítása/engedélyezése
-  run systemctl daemon-reload || true
-  run systemctl enable --now nodered.service
-  ok "Node-RED telepítve"
+  # A Node-RED installer NEM mindig exit 0-val tér vissza,
+  # ezért kontrolláltan kezeljük
+  set +e
+  curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb \
+    | bash -s -- --confirm-root
+  NODE_RED_RC=$?
+  set -e
+
+  log "Node-RED installer exit code: $NODE_RED_RC"
+
+  # Valódi ellenőrzés: service létezik és fut-e
+  if systemctl list-unit-files | grep -q '^nodered.service'; then
+    systemctl daemon-reload || true
+    systemctl enable --now nodered.service
+  fi
+
+  if systemctl is-active --quiet nodered; then
+    ok "Node-RED telepítve és fut"
+  else
+    fail "Node-RED telepítés sikertelen (service nem fut)"
+  fi
 }
 
 install_mosquitto() {
@@ -154,7 +185,6 @@ install_ufw() {
   log "UFW tűzfal beállítás"
   apt_install ufw
 
-  # Szabályok (kért portok)
   run ufw allow OpenSSH
   run ufw allow 80/tcp
   run ufw allow 1880/tcp
@@ -164,7 +194,11 @@ install_ufw() {
   ok "UFW engedélyezve"
 }
 
-### ====== TELEPÍTÉSI LISTA ======
+############################################
+# FUTTATÁS
+############################################
+apt_update
+
 SERVICES=(
   INSTALL_APACHE:install_apache
   INSTALL_SSH:install_ssh
@@ -174,9 +208,6 @@ SERVICES=(
   INSTALL_PHP:install_php
   INSTALL_UFW:install_ufw
 )
-
-### ====== FUTTATÁS ======
-apt_update
 
 TOTAL=${#SERVICES[@]}
 COUNT=0
@@ -188,7 +219,6 @@ for s in "${SERVICES[@]}"; do
 
   echo -e "${BLUE}[$COUNT/$TOTAL]${NC} $FUNC"
 
-  # ha nincs beállítva a változó, tekintsük false-nak
   if [[ "${!VAR:-false}" == "true" ]]; then
     "$FUNC"
   else
@@ -196,7 +226,9 @@ for s in "${SERVICES[@]}"; do
   fi
 done
 
-### ====== HEALTH CHECK ======
+############################################
+# HEALTH CHECK
+############################################
 echo
 log "Szolgáltatások állapota"
 for svc in apache2 ssh mosquitto mariadb nodered; do
@@ -207,16 +239,20 @@ for svc in apache2 ssh mosquitto mariadb nodered; do
   fi
 done
 
-### ====== PORT CHECK (HASZNOS VBOX-BAN) ======
+############################################
+# PORT CHECK
+############################################
 echo
 log "Port ellenőrzés (80, 1880, 1883)"
 if command -v ss >/dev/null 2>&1; then
-  ss -tulpn | grep -E '(:80|:1880|:1883)\b' || warn "Nem látok hallgatózó portot (lehet még indul, vagy szolgáltatás nem fut)."
+  ss -tulpn | grep -E '(:80|:1880|:1883)\b' || warn "Nem látok hallgatózó portot."
 else
   warn "ss parancs nem elérhető"
 fi
 
-### ====== SUMMARY ======
+############################################
+# SUMMARY
+############################################
 echo -e "${GREEN}
 =================================
   TELEPÍTÉS BEFEJEZVE ✔
