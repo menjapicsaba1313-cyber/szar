@@ -287,6 +287,7 @@ if [[ "$any_fail" -eq 0 ]]; then
 ╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
 EOF
   echo -e "${NC}"
+  echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
 
   exit 0
 else
