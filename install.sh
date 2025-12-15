@@ -274,7 +274,7 @@ if [[ "$any_fail" -eq 0 ]]; then
   log "Telepítés befejezve: SIKERES"
 
   echo
-  echo -e "${GREEN}"
+  echo -e "${PURPLE}"
   cat << "EOF"
 ██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
 ██║  ██║██╔══██╗     ██║██╔══██╗██╔══██╗    ██║     ██║██║     ██╔══██╗██║ ██╔╝
