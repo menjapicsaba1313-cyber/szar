@@ -270,7 +270,7 @@ for k in "${!RESULTS[@]}"; do
 done
 
 if [[ "$any_fail" -eq 0 ]]; then
-  echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
+  echo -e "${PURPLE}KÉSZ – minden lépés rendben lefutott.${NC}"
   log "Telepítés befejezve: SIKERES"
 
   echo
