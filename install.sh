@@ -38,6 +38,31 @@ BLUE="\e[34m"
 NC="\e[0m"
 
 ############################################
+# VÁRAKOZÓS ZENE (OPCIONÁLIS, BIZTONSÁGOS)
+############################################
+MUSIC_PID=""
+
+start_music() {
+  # csak akkor indul, ha van speaker-test vagy aplay
+  if command -v speaker-test >/dev/null 2>&1; then
+    speaker-test -t sine -f 440 -l 0 >/dev/null 2>&1 &
+    MUSIC_PID=$!
+  elif command -v aplay >/dev/null 2>&1 && [[ -f /usr/share/sounds/alsa/Front_Center.wav ]]; then
+    while true; do
+      aplay /usr/share/sounds/alsa/Front_Center.wav >/dev/null 2>&1
+      sleep 2
+    done &
+    MUSIC_PID=$!
+  fi
+}
+
+stop_music() {
+  if [[ -n "$MUSIC_PID" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    kill "$MUSIC_PID" 2>/dev/null || true
+  fi
+}
+
+############################################
 # ROOT CHECK
 ############################################
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -195,6 +220,9 @@ install_node_red() {
 # FUTTATÁS
 ############################################
 # apt update mindig menjen (különben minden más bukhat)
+
+start_music
+
 if apt_update; then
   ok "APT update kész"
 else
@@ -289,9 +317,12 @@ EOF
   echo -e "${NC}"
   echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
 
+  stop_music
   exit 0
 else
   echo -e "${YELLOW}KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE${NC}"
   log "Telepítés befejezve: RÉSZBEN SIKERES"
+
+  stop_music
   exit 1
 fi
