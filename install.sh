@@ -2,6 +2,7 @@
 set -u
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export SDL_AUDIODRIVER=alsa
 
 ############################################
 # KONFIG
@@ -65,7 +66,7 @@ pkg_installed(){ dpkg -s "$1" >/dev/null 2>&1; }
 svc_on(){ systemctl enable --now "$1" >/dev/null 2>&1; }
 
 ############################################
-# YOUTUBE ZENE
+# YOUTUBE ZENE (csendes ALSA)
 ############################################
 MUSIC_PID=""
 
@@ -80,7 +81,7 @@ music_start(){
   ensure_music_tools
   (
     yt-dlp -f bestaudio -o - "$YOUTUBE_URL" 2>/dev/null |
-    ffplay -nodisp -loglevel quiet -loop 0 -volume "$MUSIC_VOLUME" -
+    ffplay -nodisp -loglevel error -autoexit -loop 0 -volume "$MUSIC_VOLUME" - 2>/dev/null
   ) &
   MUSIC_PID=$!
   ok "Zene elindult (T=toggle, M=stop, H=súgó)"
@@ -142,8 +143,8 @@ install_node_red(){
   apt_install curl ca-certificates
   curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb |
     bash -s -- --confirm-root
-  systemctl daemon-reload
-  svc_on nodered.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  svc_on nodered.service || true
 }
 
 install_ufw(){
@@ -184,7 +185,7 @@ run_component(){
   fi
 
   ( eval "$install" ) & pid=$!
-  spinner "$pid" "$name telepítése..."
+  spinner "$pid" "$name telepítése... (T/M)"
   wait "$pid" && ok "$name kész" || warn "$name hiba"
   echo
 }
