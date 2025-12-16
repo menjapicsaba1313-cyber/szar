@@ -22,7 +22,7 @@ fi
 : "${MUSIC_PLAYER:=auto}"   # auto | mpg123 | ffplay
 : "${MUSIC_VOLUME:=80}"
 
-# MP3: script mappájából töltjük (mindegy honnan indítod)
+# MP3: mindig a script mappájából
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 : "${MUSIC_FILE:=$SCRIPT_DIR/Elevator Music (Kevin MacLeod) - Background Music (HD).mp3}"
 
@@ -51,7 +51,6 @@ touch "$LOGFILE" 2>/dev/null || true
 log() { echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
 ok() { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
-fail() { echo -e "${RED}✖ $1${NC}"; log "FAIL: $1"; }
 
 run() {
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -75,21 +74,14 @@ spinner() {
   printf "\r%s\r" " "
 }
 
-ask_choice() {
-  # ask_choice "kérdés" -> echo I/T/K
+ask_yes_no() {
   local q="$1"
   while true; do
-    echo
-    echo "$q"
-    echo "  I) Telepítés"
-    echo "  T) Törlés"
-    echo "  K) Kihagyás"
-    read -rp "Válasz (I/T/K): " a
+    read -rp "$q (i/n): " a
     case "$a" in
-      I|i) echo "I"; return 0;;
-      T|t) echo "T"; return 0;;
-      K|k) echo "K"; return 0;;
-      *) echo "I / T / K";;
+      i|I) return 0 ;;
+      n|N) return 1 ;;
+      *) echo "i vagy n" ;;
     esac
   done
 }
@@ -99,16 +91,11 @@ ask_choice() {
 ############################################
 apt_update() { log "APT update"; run apt-get update -y; }
 apt_install() { log "APT install: $*"; run apt-get install -y "$@"; }
-apt_purge() { log "APT purge: $*"; run apt-get purge -y "$@"; }
-apt_autoremove() { log "APT autoremove"; run apt-get autoremove -y; }
-
 pkg_installed() { dpkg -s "$1" >/dev/null 2>&1; }
-
 svc_enable_now() { run systemctl enable --now "$1" >/dev/null 2>&1; }
-svc_disable_now() { run systemctl disable --now "$1" >/dev/null 2>&1 || true; }
 
 ############################################
-# MP3 LEJÁTSZÓ (T=toggle, M=stop)
+# MP3 LEJÁTSZÓ (T=toggle, M=stop, H=súgó)
 ############################################
 MUSIC_PID=""
 
@@ -163,7 +150,7 @@ music_start() {
     ( ffplay -nodisp -loglevel quiet -loop 0 "$MUSIC_FILE" >/dev/null 2>&1 ) &
     MUSIC_PID=$!
   fi
-  ok "Zene elindítva (T=toggle, M=stop)"
+  ok "Zene elindítva (T=toggle, M=stop, H=súgó)"
 }
 
 music_stop() {
@@ -201,25 +188,16 @@ hotkey_loop() {
   done
 }
 
-cleanup() {
-  music_stop
-}
+cleanup() { music_stop; }
 trap cleanup EXIT
 
 ############################################
-# TELEPÍTÉS / TÖRLÉS FUNKCIÓK (régi logika)
+# TELEPÍTŐ FUNKCIÓK (régi logika)
 ############################################
 install_apache() { apt_install apache2 || return 1; svc_enable_now apache2 || return 1; return 0; }
-remove_apache() { svc_disable_now apache2; apt_purge apache2 || return 1; apt_autoremove || true; return 0; }
-
 install_ssh() { apt_install openssh-server || return 1; svc_enable_now ssh || return 1; return 0; }
-remove_ssh() { svc_disable_now ssh; apt_purge openssh-server || return 1; apt_autoremove || true; return 0; }
-
 install_mosquitto() { apt_install mosquitto mosquitto-clients || return 1; svc_enable_now mosquitto || return 1; return 0; }
-remove_mosquitto() { svc_disable_now mosquitto; apt_purge mosquitto mosquitto-clients || return 1; apt_autoremove || true; return 0; }
-
 install_mariadb() { apt_install mariadb-server || return 1; svc_enable_now mariadb || return 1; return 0; }
-remove_mariadb() { svc_disable_now mariadb; apt_purge mariadb-server || return 1; apt_autoremove || true; return 0; }
 
 # PHP: Apache kötelező
 install_php() {
@@ -231,7 +209,6 @@ install_php() {
   run systemctl restart apache2 >/dev/null 2>&1 || true
   return 0
 }
-remove_php() { apt_purge php libapache2-mod-php php-mysql || return 1; apt_autoremove || true; return 0; }
 
 install_ufw() {
   apt_install ufw || return 1
@@ -240,12 +217,6 @@ install_ufw() {
   run ufw allow 1880/tcp || return 1
   run ufw allow 1883/tcp || return 1
   run ufw --force enable || return 1
-  return 0
-}
-remove_ufw() {
-  run ufw --force disable >/dev/null 2>&1 || true
-  apt_purge ufw || return 1
-  apt_autoremove || true
   return 0
 }
 
@@ -264,23 +235,13 @@ install_node_red() {
   run systemctl enable --now nodered.service >/dev/null 2>&1 || true
   systemctl is-active --quiet nodered 2>/dev/null
 }
-remove_node_red() {
-  svc_disable_now nodered.service
-  svc_disable_now nodered
-  if command -v npm >/dev/null 2>&1; then
-    run npm -g remove node-red >/dev/null 2>&1 || true
-  fi
-  rm -f /etc/systemd/system/nodered.service 2>/dev/null || true
-  run systemctl daemon-reload >/dev/null 2>&1 || true
-  return 0
-}
 
 ############################################
 # SHOW-OFF BANNER
 ############################################
 clear
 echo -e "${PURPLE}${BOLD}=========================================${NC}"
-echo -e "${PURPLE}${BOLD}  SHOW-OFF SERVER INSTALLER (MENU + MP3) ${NC}"
+echo -e "${PURPLE}${BOLD}  SHOW-OFF SERVER INSTALLER (2 OP) + MP3 ${NC}"
 echo -e "${PURPLE}${BOLD}=========================================${NC}"
 echo -e "${BLUE}Logfile:${NC} $LOGFILE"
 echo -e "${DIM}Zene: ENABLE_MUSIC=${ENABLE_MUSIC} | MUSIC_FILE=${MUSIC_FILE}${NC}"
@@ -293,120 +254,62 @@ echo
 declare -A RESULTS
 set_result() { RESULTS["$1"]="$2"; }
 
-run_action() {
-  # run_action "Label" install/remove/skip "command"
-  local label="$1" action="$2" cmd="$3"
+run_install_if_missing() {
+  # name, check_command, install_command
+  local name="$1"
+  local check_cmd="$2"
+  local install_cmd="$3"
 
-  if [[ "$action" == "K" ]]; then
-    set_result "$label" "KIHAGYVA"
-    warn "$label kihagyva"
+  echo -e "${BLUE}${BOLD}==> ${name}${NC}"
+
+  if eval "$check_cmd"; then
+    set_result "$name" "KIHAGYVA (már telepítve)"
+    ok "$name már telepítve -> kihagyva"
+    echo
     return 0
   fi
 
-  # telepítés/törlés fut spinnerrel + zene hotkey
-  ( $cmd ) & pid=$!
-  spinner "$pid" "$label: $( [[ "$action" == "I" ]] && echo "Telepítés" || echo "Törlés" )... (T/M)"
+  if ! ask_yes_no "$name nincs telepítve. Telepítsem?"; then
+    set_result "$name" "KIHAGYVA (user döntés)"
+    warn "$name kihagyva (nem kérted)"
+    echo
+    return 0
+  fi
+
+  ( eval "$install_cmd" ) & pid=$!
+  spinner "$pid" "Telepítés: $name... (T/M)"
   wait "$pid"
   local rc=$?
 
   if [[ $rc -eq 0 ]]; then
-    set_result "$label" "SIKERES"
-    ok "$label OK"
-    return 0
+    set_result "$name" "SIKERES"
+    ok "$name OK"
   else
-    set_result "$label" "HIBA"
-    warn "$label HIBA"
-    return 1
+    set_result "$name" "HIBA"
+    warn "$name HIBA"
   fi
+  echo
 }
 
 ############################################
-# MAIN
+# FUTTATÁS
 ############################################
 hotkey_loop & HOTKEY_PID=$!
 music_start
 
-# APT update (régi scripthez hasonló)
 ( apt_update ) & pid=$!
 spinner "$pid" "APT update... (T/M)"
 wait "$pid" || warn "APT update sikertelen (internet/DNS/repo gond)."
 echo
 
-# MENÜ: minden elemnél kiírjuk, telepítve van-e, és kérjük az akciót
-echo -e "${BOLD}Válaszd ki, mit csináljunk az elemekkel:${NC}"
-echo -e "${DIM}(Ha telepítve van -> felajánlja a törlést is. PHP-hoz Apache kötelező.)${NC}"
+run_install_if_missing "Apache2"   "pkg_installed apache2"          "install_apache"
+run_install_if_missing "SSH"       "pkg_installed openssh-server"   "install_ssh"
+run_install_if_missing "Mosquitto" "pkg_installed mosquitto"        "install_mosquitto"
+run_install_if_missing "Node-RED"  "nr_installed"                   "install_node_red"
+run_install_if_missing "MariaDB"   "pkg_installed mariadb-server"   "install_mariadb"
+run_install_if_missing "PHP"       "(pkg_installed php || pkg_installed libapache2-mod-php)" "install_php"
+run_install_if_missing "UFW"       "pkg_installed ufw"              "install_ufw"
 
-# Apache2
-apache_state="NINCS"; pkg_installed apache2 && apache_state="TELEPÍTVE"
-echo; echo -e "${BLUE}Apache2:${NC} $apache_state"
-a_apache="$(ask_choice "Apache2 művelet?")"
-if [[ "$a_apache" == "T" && "$(pkg_installed apache2; echo $?)" -ne 0 ]]; then
-  warn "Apache2 nincs telepítve, törlés kihagyva."
-  a_apache="K"
-fi
-run_action "Apache2" "$a_apache" "$( [[ "$a_apache" == "I" ]] && echo install_apache || echo remove_apache )"
-
-# SSH
-ssh_state="NINCS"; pkg_installed openssh-server && ssh_state="TELEPÍTVE"
-echo; echo -e "${BLUE}SSH:${NC} $ssh_state"
-a_ssh="$(ask_choice "SSH művelet?")"
-if [[ "$a_ssh" == "T" && "$(pkg_installed openssh-server; echo $?)" -ne 0 ]]; then
-  warn "SSH nincs telepítve, törlés kihagyva."
-  a_ssh="K"
-fi
-run_action "SSH" "$a_ssh" "$( [[ "$a_ssh" == "I" ]] && echo install_ssh || echo remove_ssh )"
-
-# Mosquitto
-mqtt_state="NINCS"; pkg_installed mosquitto && mqtt_state="TELEPÍTVE"
-echo; echo -e "${BLUE}Mosquitto:${NC} $mqtt_state"
-a_mqtt="$(ask_choice "Mosquitto művelet?")"
-if [[ "$a_mqtt" == "T" && "$(pkg_installed mosquitto; echo $?)" -ne 0 ]]; then
-  warn "Mosquitto nincs telepítve, törlés kihagyva."
-  a_mqtt="K"
-fi
-run_action "Mosquitto" "$a_mqtt" "$( [[ "$a_mqtt" == "I" ]] && echo install_mosquitto || echo remove_mosquitto )"
-
-# Node-RED
-nr_state="NINCS"; nr_installed && nr_state="TELEPÍTVE"
-echo; echo -e "${BLUE}Node-RED:${NC} $nr_state"
-a_nr="$(ask_choice "Node-RED művelet?")"
-if [[ "$a_nr" == "T" && "$nr_state" == "NINCS" ]]; then
-  warn "Node-RED nincs telepítve, törlés kihagyva."
-  a_nr="K"
-fi
-run_action "Node-RED" "$a_nr" "$( [[ "$a_nr" == "I" ]] && echo install_node_red || echo remove_node_red )"
-
-# MariaDB
-db_state="NINCS"; pkg_installed mariadb-server && db_state="TELEPÍTVE"
-echo; echo -e "${BLUE}MariaDB:${NC} $db_state"
-a_db="$(ask_choice "MariaDB művelet?")"
-if [[ "$a_db" == "T" && "$(pkg_installed mariadb-server; echo $?)" -ne 0 ]]; then
-  warn "MariaDB nincs telepítve, törlés kihagyva."
-  a_db="K"
-fi
-run_action "MariaDB" "$a_db" "$( [[ "$a_db" == "I" ]] && echo install_mariadb || echo remove_mariadb )"
-
-# PHP (Apache függőség)
-php_state="NINCS"; (pkg_installed php || pkg_installed libapache2-mod-php) && php_state="TELEPÍTVE"
-echo; echo -e "${BLUE}PHP:${NC} $php_state ${DIM}(Apache2 kötelező)${NC}"
-a_php="$(ask_choice "PHP művelet?")"
-if [[ "$a_php" == "T" && "$php_state" == "NINCS" ]]; then
-  warn "PHP nincs telepítve, törlés kihagyva."
-  a_php="K"
-fi
-run_action "PHP" "$a_php" "$( [[ "$a_php" == "I" ]] && echo install_php || echo remove_php )"
-
-# UFW
-ufw_state="NINCS"; pkg_installed ufw && ufw_state="TELEPÍTVE"
-echo; echo -e "${BLUE}UFW:${NC} $ufw_state"
-a_ufw="$(ask_choice "UFW művelet?")"
-if [[ "$a_ufw" == "T" && "$(pkg_installed ufw; echo $?)" -ne 0 ]]; then
-  warn "UFW nincs telepítve, törlés kihagyva."
-  a_ufw="K"
-fi
-run_action "UFW" "$a_ufw" "$( [[ "$a_ufw" == "I" ]] && echo install_ufw || echo remove_ufw )"
-
-# cleanup háttér
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
 
