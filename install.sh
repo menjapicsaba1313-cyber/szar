@@ -1,12 +1,15 @@
-#!/bin/bash
-# Show-Off Server Installer (UI edition) – FIXED for set -u + spinner background
-# Alap telepítési logika változatlan: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
+#!/usr/bin/env bash
+# SHOW-OFF SERVER INSTALLER (VirtualBox/Debian/Ubuntu) + MP3 music controls
+# Installs: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
+# Music: MP3 playback during install with start/stop/toggle.
 
 set -u
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-### ====== KONFIG ======
+############################################
+# KONFIG
+############################################
 CONFIG_FILE="./config.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -25,58 +28,22 @@ fi
 : "${INSTALL_UFW:=true}"
 : "${LOGFILE:=/var/log/showoff_installer.log}"
 
-### ====== SZÍNEK ======
-RED="\e[31m"
-GREEN="\e[32m"
-YELLOW="\e[33m"
-BLUE="\e[34m"
-PURPLE="\e[35m"
-CYAN="\e[36m"
-BOLD="\e[1m"
-DIM="\e[2m"
-NC="\e[0m"
+# ==== ZENE ====
+: "${ENABLE_MUSIC:=true}"
+# MP3 fájl: tedd a script mellé, vagy módosítsd ezt az útvonalat.
+: "${MUSIC_FILE:=./Elevator Music (Kevin MacLeod) - Background Music (HD).mp3}"
+: "${MUSIC_PLAYER:=auto}"   # auto | mpg123 | ffplay
+: "${MUSIC_VOLUME:=80}"     # mpg123 volume: 0-100
 
-### ====== UI HELPEREK (csak megjelenítés) ======
-term_cols() { tput cols 2>/dev/null || echo 80; }
-hr() { printf '%*s\n' "$(term_cols)" '' | tr ' ' '═'; }
+############################################
+# SZÍNEK
+############################################
+RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
+PURPLE="\e[35m"; CYAN="\e[36m"; BOLD="\e[1m"; DIM="\e[2m"; NC="\e[0m"
 
-center() {
-  local s="$1"
-  local w
-  w="$(term_cols)"
-  local pad=$(( (w - ${#s}) / 2 ))
-  (( pad < 0 )) && pad=0
-  printf "%*s%s\n" "$pad" "" "$s"
-}
-
-spinner() {
-  # spinner <pid> <text>
-  local pid="$1"
-  local text="$2"
-  local spin='|/-\'
-  local i=0
-  while kill -0 "$pid" 2>/dev/null; do
-    i=$(( (i + 1) % 4 ))
-    printf "\r${CYAN}${spin:$i:1}${NC} %s" "$text"
-    sleep 0.1
-  done
-  printf "\r%s\r" " "
-}
-
-panel() {
-  # panel <color> <title> <line1> <line2> ...
-  local color="$1"; shift
-  local title="$1"; shift
-  echo -e "${color}$(hr)${NC}"
-  echo -e "${color}${BOLD}${title}${NC}"
-  while [[ $# -gt 0 ]]; do
-    echo -e "${color}•${NC} $1"
-    shift
-  done
-  echo -e "${color}$(hr)${NC}"
-}
-
-### ====== ROOT CHECK ======
+############################################
+# ROOT CHECK
+############################################
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo -e "${RED}Root jogosultság szükséges.${NC}"
   echo "Futtasd így:"
@@ -85,10 +52,11 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
-### ====== LOG ======
+############################################
+# LOG
+############################################
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
-
 log() { echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
 ok() { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
@@ -102,65 +70,135 @@ run() {
   "$@"
 }
 
-### ====== BANNER ======
-clear
-echo -e "${PURPLE}${BOLD}"
-center "╔══════════════════════════════════════════════════════╗"
-center "║              SHOW-OFF SERVER INSTALLER               ║"
-center "║  Apache | Node-RED | MQTT | MariaDB | PHP | UFW       ║"
-center "║         VirtualBox / Debian / Ubuntu - ROBUSZTUS      ║"
-center "╚══════════════════════════════════════════════════════╝"
-echo -e "${NC}"
-echo -e "${BLUE}Logfile:${NC} $LOGFILE"
-echo -e "${DIM}DRY_RUN=${DRY_RUN} | APACHE=${INSTALL_APACHE} SSH=${INSTALL_SSH} NR=${INSTALL_NODE_RED} MQTT=${INSTALL_MOSQUITTO} DB=${INSTALL_MARIADB} PHP=${INSTALL_PHP} UFW=${INSTALL_UFW}${NC}"
-echo
-
-### ====== EREDMÉNYEK ======
-declare -A RESULTS
-set_result() { RESULTS["$1"]="$2"; }
-
-### ====== APT HELPERS ======
-apt_update() {
-  log "APT csomaglista frissítése"
-  run apt-get update -y
+############################################
+# UI / SPINNER (csak látvány)
+############################################
+spinner() {
+  local pid="$1"; local text="$2"
+  local spin='|/-\' i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$(( (i + 1) % 4 ))
+    printf "\r${CYAN}${spin:$i:1}${NC} %s" "$text"
+    sleep 0.1
+  done
+  printf "\r%s\r" " "
 }
 
-apt_install() {
-  log "Csomag telepítés: $*"
-  run apt-get install -y "$@"
+############################################
+# APT HELPERS
+############################################
+apt_update() { log "APT csomaglista frissítése"; run apt-get update -y; }
+apt_install() { log "Csomag telepítés: $*"; run apt-get install -y "$@"; }
+
+############################################
+# MP3 LEJÁTSZÓ (start/stop/toggle)
+############################################
+MUSIC_PID=""
+
+music_pick_player() {
+  local p=""
+  if [[ "$MUSIC_PLAYER" == "mpg123" ]]; then p="mpg123"; fi
+  if [[ "$MUSIC_PLAYER" == "ffplay" ]]; then p="ffplay"; fi
+  if [[ "$MUSIC_PLAYER" == "auto" ]]; then
+    command -v mpg123 >/dev/null 2>&1 && p="mpg123"
+    [[ -z "$p" ]] && command -v ffplay >/dev/null 2>&1 && p="ffplay"
+  fi
+  echo "$p"
 }
 
-### ====== TELEPÍTŐK (alap logika változatlan) ======
-install_apache() {
-  apt_install apache2 || return 1
-  run systemctl enable --now apache2 || return 1
+music_ensure_player_installed() {
+  local p
+  p="$(music_pick_player)"
+  [[ -n "$p" ]] && return 0
+
+  warn "Nincs mpg123/ffplay. Telepítem a mpg123-at (MP3 lejátszáshoz)."
+  apt_install mpg123 || return 1
   return 0
 }
 
-install_ssh() {
-  apt_install openssh-server || return 1
-  run systemctl enable --now ssh || return 1
+music_start() {
+  [[ "$ENABLE_MUSIC" != "true" ]] && return 0
+  if [[ ! -f "$MUSIC_FILE" ]]; then
+    warn "Zene fájl nem található: $MUSIC_FILE (kihagyom a zenét)"
+    return 0
+  fi
+
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    return 0
+  fi
+
+  local p
+  p="$(music_pick_player)"
+  if [[ -z "$p" ]]; then
+    music_ensure_player_installed || { warn "Nem tudtam lejátszót telepíteni (zene kihagyva)"; return 0; }
+    p="$(music_pick_player)"
+  fi
+
+  log "Zene indítása: player=$p file=$MUSIC_FILE"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    warn "[DRY-RUN] MUSIC start ($p \"$MUSIC_FILE\")"
+    return 0
+  fi
+
+  if [[ "$p" == "mpg123" ]]; then
+    local vol=$(( MUSIC_VOLUME * 32768 / 100 ))
+    ( mpg123 -q --loop -1 -f "$vol" "$MUSIC_FILE" >/dev/null 2>&1 ) &
+    MUSIC_PID=$!
+  else
+    ( ffplay -nodisp -loglevel quiet -loop 0 "$MUSIC_FILE" >/dev/null 2>&1 ) &
+    MUSIC_PID=$!
+  fi
+
+  ok "Zene elindítva. (T=toggle, M=stop)"
   return 0
 }
 
-install_mosquitto() {
-  apt_install mosquitto mosquitto-clients || return 1
-  run systemctl enable --now mosquitto || return 1
+music_stop() {
+  [[ "$ENABLE_MUSIC" != "true" ]] && return 0
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    log "Zene leállítása (PID: $MUSIC_PID)"
+    kill "$MUSIC_PID" 2>/dev/null || true
+    sleep 0.2
+    kill -9 "$MUSIC_PID" 2>/dev/null || true
+    MUSIC_PID=""
+    ok "Zene leállítva"
+  fi
   return 0
 }
 
-install_mariadb() {
-  apt_install mariadb-server || return 1
-  run systemctl enable --now mariadb || return 1
-  return 0
+music_toggle() {
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    music_stop
+  else
+    music_start
+  fi
 }
 
-install_php() {
-  apt_install php libapache2-mod-php php-mysql || return 1
-  run systemctl restart apache2 || return 1
-  return 0
+hotkey_loop() {
+  [[ "$ENABLE_MUSIC" != "true" ]] && return 0
+  while true; do
+    if read -rsn1 -t 0.5 key; then
+      case "$key" in
+        [Tt]) music_toggle ;;
+        [Mm]) music_stop ;;
+      esac
+    fi
+  done
 }
 
+cleanup() {
+  music_stop
+}
+trap cleanup EXIT
+
+############################################
+# TELEPÍTŐ FUNKCIÓK
+############################################
+install_apache() { apt_install apache2 || return 1; run systemctl enable --now apache2 || return 1; return 0; }
+install_ssh() { apt_install openssh-server || return 1; run systemctl enable --now ssh || return 1; return 0; }
+install_mosquitto() { apt_install mosquitto mosquitto-clients || return 1; run systemctl enable --now mosquitto || return 1; return 0; }
+install_mariadb() { apt_install mariadb-server || return 1; run systemctl enable --now mariadb || return 1; return 0; }
+install_php() { apt_install php libapache2-mod-php php-mysql || return 1; run systemctl restart apache2 || return 1; return 0; }
 install_ufw() {
   apt_install ufw || return 1
   run ufw allow OpenSSH || return 1
@@ -170,10 +208,8 @@ install_ufw() {
   run ufw --force enable || return 1
   return 0
 }
-
 install_node_red() {
   apt_install curl ca-certificates || return 1
-
   log "Node-RED telepítés (non-interactive --confirm-root)"
   set +e
   curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb \
@@ -181,55 +217,46 @@ install_node_red() {
   local rc=$?
   set -e
   log "Node-RED installer exit code: $rc"
-
   run systemctl daemon-reload || true
   if systemctl list-unit-files | grep -q '^nodered\.service'; then
     run systemctl enable --now nodered.service || true
   fi
-
   systemctl is-active --quiet nodered 2>/dev/null
 }
 
-### ====== APT UPDATE show-off ======
-panel "${CYAN}" "Előkészítés" "APT update fut..."
-( apt_update ) & pid=$!
-spinner "$pid" "APT update..."
-wait "$pid"
-rc=$?
-if [[ $rc -eq 0 ]]; then
-  ok "APT update kész"
-else
-  fail "APT update sikertelen (internet/DNS/repo gond)."
-  exit 1
-fi
+############################################
+# BANNER
+############################################
+clear
+echo -e "${PURPLE}${BOLD}=========================================${NC}"
+echo -e "${PURPLE}${BOLD}  SHOW-OFF SERVER INSTALLER (MP3)        ${NC}"
+echo -e "${PURPLE}${BOLD}=========================================${NC}"
+echo -e "${BLUE}Logfile:${NC} $LOGFILE"
+echo -e "${DIM}Zene: ENABLE_MUSIC=${ENABLE_MUSIC} | MUSIC_FILE=${MUSIC_FILE}${NC}"
+echo -e "${DIM}Hotkeys: T=toggle zene | M=stop zene${NC}"
 echo
 
-### ====== RUN INSTALL (FIXED) ======
-# FIX: nem a subshell állítja a RESULTS-t, hanem a fő folyamat a wait exit code alapján.
-run_install() {
-  local var="$1"
-  local label="$2"
-  local func="$3"
+############################################
+# EREDMÉNYEK
+############################################
+declare -A RESULTS
+set_result() { RESULTS["$1"]="$2"; }
 
+run_install() {
+  local var="$1" label="$2" func="$3"
   echo -e "${BLUE}${BOLD}==> ${label}${NC}"
 
   if [[ "${!var:-false}" == "true" ]]; then
-    # Futassuk a telepítést backgroundban a spinner miatt,
-    # majd a wait exit code alapján állítsuk a RESULTS-t ITT (parentben).
     ( "$func" ) & pid=$!
-    spinner "$pid" "Telepítés: $label"
+    spinner "$pid" "Telepítés: $label (T/M)"
     wait "$pid"
-    local step_rc=$?
-
-    if [[ $step_rc -eq 0 ]]; then
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
       set_result "$label" "SIKERES"
       ok "$label OK"
     else
       set_result "$label" "HIBA"
-      fail "$label HIBA"
-      # Ha azt akarod, hogy hiba esetén is menjen tovább, ezt a sort kommentezd ki:
-      # return 0
-      return 1
+      warn "$label HIBA"
     fi
   else
     set_result "$label" "KIHAGYVA"
@@ -237,6 +264,17 @@ run_install() {
   fi
   echo
 }
+
+############################################
+# FUTTATÁS
+############################################
+hotkey_loop & HOTKEY_PID=$!
+music_start
+
+( apt_update ) & pid=$!
+spinner "$pid" "APT update... (T/M)"
+wait "$pid" || warn "APT update sikertelen (internet/DNS/repo gond)."
+echo
 
 run_install INSTALL_APACHE     "Apache2"   install_apache
 run_install INSTALL_SSH        "SSH"       install_ssh
@@ -246,55 +284,31 @@ run_install INSTALL_MARIADB    "MariaDB"   install_mariadb
 run_install INSTALL_PHP        "PHP"       install_php
 run_install INSTALL_UFW        "UFW"       install_ufw
 
-### ====== HEALTH CHECK + PORT CHECK ======
-panel "${CYAN}" "HEALTH CHECK" "Szolgáltatások állapota"
-for svc in apache2 ssh mosquitto mariadb nodered; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    ok "$svc RUNNING"
-  else
-    warn "$svc NEM FUT"
-  fi
-done
+kill "$HOTKEY_PID" 2>/dev/null || true
+music_stop
+
+############################################
+# SUMMARY + HAJRÁ LILÁK
+############################################
 echo
-
-panel "${CYAN}" "PORT CHECK" "Ellenőrzés: 80 / 1880 / 1883"
-if command -v ss >/dev/null 2>&1; then
-  if ss -tulpn | grep -E '(:80|:1880|:1883)\b' >/dev/null; then
-    ok "Portok rendben"
-  else
-    warn "Nem látok hallgatózó portot (lehet szolgáltatás nem fut)."
-  fi
-else
-  warn "ss parancs nem elérhető"
-fi
-echo
-
-### ====== DASHBOARD ======
-echo -e "${BOLD}=================================${NC}"
-echo -e "${BOLD}  TELEPÍTÉSI DASHBOARD${NC}"
-echo -e "${BOLD}=================================${NC}"
-
+echo "================================="
+echo "  TELEPÍTÉSI ÖSSZEFOGLALÓ"
+echo "================================="
 any_fail=0
 for k in "${!RESULTS[@]}"; do
-  case "${RESULTS[$k]}" in
-    SIKERES) echo -e "${GREEN}✔${NC} $k : ${GREEN}${RESULTS[$k]}${NC}" ;;
-    KIHAGYVA) echo -e "${YELLOW}⏭${NC} $k : ${YELLOW}${RESULTS[$k]}${NC}" ;;
-    *) echo -e "${RED}✖${NC} $k : ${RED}${RESULTS[$k]}${NC}"; any_fail=1 ;;
-  esac
+  echo "$k : ${RESULTS[$k]}"
+  [[ "${RESULTS[$k]}" == "HIBA" ]] && any_fail=1
 done
 echo
 
 if [[ "$any_fail" -eq 0 ]]; then
   echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
-  log "Telepítés befejezve: SIKERES"
-
-  echo
   echo -e "${PURPLE}"
   cat << "EOF"
 ██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
 ██║  ██║██╔══██╗     ██║██╔══██╗██╔══██╗    ██║     ██║██║     ██╔══██╗██║ ██╔╝
-███████║███████║     ██║██████╔╝███████║    ██║     ██║██║     ███████║█████╔╝ 
-██╔══██║██╔══██║██   ██║██╔══██╗██╔══██║    ██║     ██║██║     ██╔══██║██╔═██╗ 
+███████║███████║     ██║██████╔╝███████║    ██║     ██║██║     ███████║█████╔╝
+██╔══██║██╔══██║██   ██║██╔══██╗██╔══██║    ██║     ██║██║     ██╔══██║██╔═██╗
 ██║  ██║██║  ██║╚█████╔╝██║  ██║██║  ██║    ███████╗██║███████╗██║  ██║██║  ██╗
 ╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
 EOF
@@ -303,6 +317,5 @@ EOF
   exit 0
 else
   warn "KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE"
-  log "Telepítés befejezve: RÉSZBEN SIKERES"
   exit 1
 fi
