@@ -38,7 +38,6 @@ touch "$LOGFILE" 2>/dev/null || true
 log(){ echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
 ok(){ echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn(){ echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
-info(){ echo -e "${BLUE}i${NC} $1"; log "INFO: $1"; }
 
 ############################################
 # UI SEGÉDEK
@@ -167,49 +166,118 @@ install_ufw(){
 }
 
 ############################################
-# KÖRBE MOZGÓ HAJRÁ ÚJPEST (JAVÍTOTT)
+# NAGY, KÖRBE MOZGÓ SHOW-OFF (JAVÍTOTT)
 ############################################
-animate_hajra() {
-  local text="HAJRÁ ÚJPEST"
+animate_hajra_big() {
+  # nagy banner (ASCII) – stabil, mert több soros
   local color="\e[35m"
   local reset="\e[0m"
 
+  # Ha terminál nem alkalmas
   if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
-    echo -e "${color}${text}${reset}"
+    echo -e "${color}HAJRA UJPEST${reset}"
     return 0
   fi
 
-  local positions=(
-    "0 -4" "2 -3" "3 -2" "4 0" "3 2" "2 3"
-    "0 4" "-2 3" "-3 2" "-4 0" "-3 -2" "-2 -3"
+  # Nagy szöveg (kb. “akkora”, mint a korábbi nagy blokk)
+  local -a art=(
+"██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗   ██╗     ██╗██████╗ ███████╗███████╗████████╗"
+"██║  ██║██╔══██╗     ██║██╔══██╗██╔══██╗    ██║   ██║     ██║██╔══██╗██╔════╝██╔════╝╚══██╔══╝"
+"███████║███████║     ██║██████╔╝███████║    ██║   ██║     ██║██████╔╝█████╗  ███████╗   ██║   "
+"██╔══██║██╔══██║██   ██║██╔══██╗██╔══██║    ██║   ██║     ██║██╔═══╝ ██╔══╝  ╚════██║   ██║   "
+"██║  ██║██║  ██║╚█████╔╝██║  ██║██║  ██║    ╚██████╔╝     ██║██║     ███████╗███████║   ██║   "
+"╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝     ╚═════╝      ╚═╝╚═╝     ╚══════╝╚══════╝   ╚═╝   "
   )
 
   local rows cols
   rows="$(tput lines 2>/dev/null || echo 24)"
-  cols="$(tput cols 2>/dev/null || echo 80)"
-  local cy=$(( rows / 2 ))
-  local cx=$(( (cols - ${#text}) / 2 ))
+  cols="$(tput cols 2>/dev/null || echo 120)"
+
+  # kis “kör” eltolások (dx, dy)
+  local positions=(
+    "0 -4" "3 -3" "6 -1" "8 1" "6 3" "3 4"
+    "0 5" "-3 4" "-6 3" "-8 1" "-6 -1" "-3 -3"
+  )
 
   tput civis 2>/dev/null || true
 
-  for ((loop=0; loop<3; loop++)); do
+  # középre igazítás – számoljuk ki a banner szélességét
+  local maxw=0
+  for line in "${art[@]}"; do
+    (( ${#line} > maxw )) && maxw=${#line}
+  done
+
+  local base_y=$(( (rows - ${#art[@]}) / 2 ))
+  local base_x=$(( (cols - maxw) / 2 ))
+  (( base_y < 0 )) && base_y=0
+  (( base_x < 0 )) && base_x=0
+
+  for ((loop=0; loop<2; loop++)); do
     for pos in "${positions[@]}"; do
       printf "\033[2J\033[H"
       read -r dx dy <<< "$pos"
-
-      local y=$(( cy + dy ))
-      local x=$(( cx + dx ))
+      local y=$(( base_y + dy ))
+      local x=$(( base_x + dx ))
       (( y < 0 )) && y=0
       (( x < 0 )) && x=0
 
-      tput cup "$y" "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+1))" "$((x+1))"
-      printf "%b%s%b" "$color" "$text" "$reset"
+      for i in "${!art[@]}"; do
+        tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
+        printf "%b%s%b" "$color" "${art[$i]}" "$reset"
+      done
       sleep 0.10
     done
   done
 
   tput cnorm 2>/dev/null || true
   printf "\033[2J\033[H"
+}
+
+############################################
+# BEFEJEZODOTT – NAGY + SZÍNVÁLTÓ
+############################################
+befejezodott_color() {
+  local -a art=(
+"██████╗ ███████╗███████╗███████╗     ██╗███████╗███████╗███████╗██████╗  ██████╗ ██████╗ ████████╗"
+"██╔══██╗██╔════╝██╔════╝██╔════╝     ██║██╔════╝██╔════╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗╚══██╔══╝"
+"██████╔╝█████╗  █████╗  █████╗       ██║█████╗  █████╗  █████╗  ██████╔╝██║   ██║██████╔╝   ██║   "
+"██╔══██╗██╔══╝  ██╔══╝  ██╔══╝  ██   ██║██╔══╝  ██╔══╝  ██╔══╝  ██╔══██╗██║   ██║██╔══██╗   ██║   "
+"██████╔╝███████╗███████╗██║     ╚█████╔╝███████╗██║     ███████╗██║  ██║╚██████╔╝██║  ██║   ██║   "
+"╚═════╝ ╚══════╝╚══════╝╚═╝      ╚════╝ ╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   "
+  )
+
+  local -a colors=("\e[35m" "\e[34m" "\e[36m" "\e[32m" "\e[33m" "\e[31m")
+  local reset="\e[0m"
+
+  local rows cols
+  rows="$(tput lines 2>/dev/null || echo 24)"
+  cols="$(tput cols 2>/dev/null || echo 120)"
+
+  local maxw=0
+  for line in "${art[@]}"; do
+    (( ${#line} > maxw )) && maxw=${#line}
+  done
+
+  local y=$(( (rows - ${#art[@]}) / 2 ))
+  local x=$(( (cols - maxw) / 2 ))
+  (( y < 0 )) && y=0
+  (( x < 0 )) && x=0
+
+  tput civis 2>/dev/null || true
+
+  # színváltás
+  for ((k=0; k<24; k++)); do
+    printf "\033[2J\033[H"
+    local c="${colors[$((k % ${#colors[@]}))]}"
+    for i in "${!art[@]}"; do
+      tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
+      printf "%b%s%b" "$c" "${art[$i]}" "$reset"
+    done
+    sleep 0.11
+  done
+
+  tput cnorm 2>/dev/null || true
+  echo
 }
 
 ############################################
@@ -259,15 +327,6 @@ music_stop
 ############################################
 # SHOW-OFF VÉGE
 ############################################
-animate_hajra
-
-echo -e "${PURPLE}"
-cat << "EOF"
-██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
-██║  ██║██╔══██╗     ██║██╔══██╗██╔══██╗    ██║     ██║██║     ██╔══██╗██║ ██╔╝
-███████║███████║     ██║██████╔╝███████║    ██║     ██║██║     ███████║█████╔╝
-██╔══██║██╔══██║██   ██║██╔══██╗██╔══██║    ██║     ██║██║     ██╔══██║██╔═██╗
-██║  ██║██║  ██║╚█████╔╝██║  ██║██║  ██║    ███████╗██║███████╗██║  ██║██║  ██╗
-╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
-EOF
+animate_hajra_big
+befejezodott_color
 echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
