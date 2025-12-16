@@ -1,15 +1,12 @@
 #!/bin/bash
-# Show-Off Server Installer - robust edition (VirtualBox/Debian/Ubuntu)
-# Installs: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
-# Uses config.conf toggles, logs, and does NOT abort on single-component failures.
+# Show-Off Server Installer (UI edition) – FIXED for set -u + spinner background
+# Alap telepítési logika változatlan: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
 
 set -u
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
 
-############################################
-# KONFIG
-############################################
+### ====== KONFIG ======
 CONFIG_FILE="./config.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -28,9 +25,7 @@ fi
 : "${INSTALL_UFW:=true}"
 : "${LOGFILE:=/var/log/showoff_installer.log}"
 
-############################################
-# SZÍNEK
-############################################
+### ====== SZÍNEK ======
 RED="\e[31m"
 GREEN="\e[32m"
 YELLOW="\e[33m"
@@ -41,9 +36,7 @@ BOLD="\e[1m"
 DIM="\e[2m"
 NC="\e[0m"
 
-############################################
-# KREATÍV UI HELPEREK (csak megjelenítés)
-############################################
+### ====== UI HELPEREK (csak megjelenítés) ======
 term_cols() { tput cols 2>/dev/null || echo 80; }
 hr() { printf '%*s\n' "$(term_cols)" '' | tr ' ' '═'; }
 
@@ -71,21 +64,19 @@ spinner() {
 }
 
 panel() {
-  # panel <color> <title> <body...>
+  # panel <color> <title> <line1> <line2> ...
   local color="$1"; shift
   local title="$1"; shift
-  echo -e "${color}╔$(hr | tr '═' '═')╗${NC}" | sed 's/^.\{1\}//; s/.$//' # keep width consistent
-  echo -e "${color}║${NC} ${BOLD}${title}${NC}"
+  echo -e "${color}$(hr)${NC}"
+  echo -e "${color}${BOLD}${title}${NC}"
   while [[ $# -gt 0 ]]; do
-    echo -e "${color}║${NC} $1"
+    echo -e "${color}•${NC} $1"
     shift
   done
-  echo -e "${color}╚$(hr | tr '═' '═')╝${NC}" | sed 's/^.\{1\}//; s/.$//'
+  echo -e "${color}$(hr)${NC}"
 }
 
-############################################
-# ROOT CHECK
-############################################
+### ====== ROOT CHECK ======
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo -e "${RED}Root jogosultság szükséges.${NC}"
   echo "Futtasd így:"
@@ -94,17 +85,12 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
-############################################
-# LOG
-############################################
+### ====== LOG ======
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
 
-log() {
-  echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null
-}
-
-ok()   { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
+log() { echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
+ok() { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
 fail() { echo -e "${RED}✖ $1${NC}"; log "FAIL: $1"; }
 
@@ -116,9 +102,7 @@ run() {
   "$@"
 }
 
-############################################
-# BANNER (látványos)
-############################################
+### ====== BANNER ======
 clear
 echo -e "${PURPLE}${BOLD}"
 center "╔══════════════════════════════════════════════════════╗"
@@ -131,15 +115,11 @@ echo -e "${BLUE}Logfile:${NC} $LOGFILE"
 echo -e "${DIM}DRY_RUN=${DRY_RUN} | APACHE=${INSTALL_APACHE} SSH=${INSTALL_SSH} NR=${INSTALL_NODE_RED} MQTT=${INSTALL_MOSQUITTO} DB=${INSTALL_MARIADB} PHP=${INSTALL_PHP} UFW=${INSTALL_UFW}${NC}"
 echo
 
-############################################
-# EREDMÉNY TÁBLÁZAT
-############################################
+### ====== EREDMÉNYEK ======
 declare -A RESULTS
 set_result() { RESULTS["$1"]="$2"; }
 
-############################################
-# APT HELPERS (STABIL)
-############################################
+### ====== APT HELPERS ======
 apt_update() {
   log "APT csomaglista frissítése"
   run apt-get update -y
@@ -150,24 +130,7 @@ apt_install() {
   run apt-get install -y "$@"
 }
 
-############################################
-# SAFE EXEC: ne álljon meg, hanem rögzítse a hibát
-############################################
-safe_step() {
-  local label="$1"; shift
-  log "START: $label -> $*"
-  if "$@"; then
-    set_result "$label" "SIKERES"
-    return 0
-  else
-    set_result "$label" "HIBA"
-    return 1
-  fi
-}
-
-############################################
-# TELEPÍTŐK (alap logika változatlan)
-############################################
+### ====== TELEPÍTŐK (alap logika változatlan) ======
 install_apache() {
   apt_install apache2 || return 1
   run systemctl enable --now apache2 || return 1
@@ -224,49 +187,53 @@ install_node_red() {
     run systemctl enable --now nodered.service || true
   fi
 
-  if systemctl is-active --quiet nodered 2>/dev/null; then
-    return 0
-  fi
-  if command -v node-red >/dev/null 2>&1; then
-    return 1
-  fi
-  return 1
+  systemctl is-active --quiet nodered 2>/dev/null
 }
 
-############################################
-# FUTTATÁS (apt update + show-off animáció)
-############################################
-echo -e "${CYAN}${BOLD}Rendszer előkészítés...${NC}"
+### ====== APT UPDATE show-off ======
+panel "${CYAN}" "Előkészítés" "APT update fut..."
 ( apt_update ) & pid=$!
-spinner "$pid" "APT update fut..."
+spinner "$pid" "APT update..."
 wait "$pid"
-if [[ $? -eq 0 ]]; then
+rc=$?
+if [[ $rc -eq 0 ]]; then
   ok "APT update kész"
 else
   fail "APT update sikertelen (internet/DNS/repo gond)."
+  exit 1
 fi
 echo
 
-# Lépések (config szerint) – csak UI tuning
+### ====== RUN INSTALL (FIXED) ======
+# FIX: nem a subshell állítja a RESULTS-t, hanem a fő folyamat a wait exit code alapján.
 run_install() {
   local var="$1"
   local label="$2"
   local func="$3"
 
   echo -e "${BLUE}${BOLD}==> ${label}${NC}"
+
   if [[ "${!var:-false}" == "true" ]]; then
-    # futtatás spinnerrel
-    ( safe_step "$label" "$func" ) & pid=$!
+    # Futassuk a telepítést backgroundban a spinner miatt,
+    # majd a wait exit code alapján állítsuk a RESULTS-t ITT (parentben).
+    ( "$func" ) & pid=$!
     spinner "$pid" "Telepítés: $label"
     wait "$pid"
-    if [[ "${RESULTS[$label]}" == "SIKERES" ]]; then
+    local step_rc=$?
+
+    if [[ $step_rc -eq 0 ]]; then
+      set_result "$label" "SIKERES"
       ok "$label OK"
     else
+      set_result "$label" "HIBA"
       fail "$label HIBA"
+      # Ha azt akarod, hogy hiba esetén is menjen tovább, ezt a sort kommentezd ki:
+      # return 0
+      return 1
     fi
   else
-    warn "$label kihagyva (config: $var=false)"
     set_result "$label" "KIHAGYVA"
+    warn "$label kihagyva (config: $var=false)"
   fi
   echo
 }
@@ -279,10 +246,8 @@ run_install INSTALL_MARIADB    "MariaDB"   install_mariadb
 run_install INSTALL_PHP        "PHP"       install_php
 run_install INSTALL_UFW        "UFW"       install_ufw
 
-############################################
-# HEALTH CHECK + PORT CHECK
-############################################
-panel "${CYAN}" "HEALTH CHECK" "Szolgáltatások állapota:"
+### ====== HEALTH CHECK + PORT CHECK ======
+panel "${CYAN}" "HEALTH CHECK" "Szolgáltatások állapota"
 for svc in apache2 ssh mosquitto mariadb nodered; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     ok "$svc RUNNING"
@@ -304,27 +269,20 @@ else
 fi
 echo
 
-############################################
-# ÖSSZEFOGLALÓ (dashboard)
-############################################
+### ====== DASHBOARD ======
 echo -e "${BOLD}=================================${NC}"
 echo -e "${BOLD}  TELEPÍTÉSI DASHBOARD${NC}"
 echo -e "${BOLD}=================================${NC}"
+
+any_fail=0
 for k in "${!RESULTS[@]}"; do
   case "${RESULTS[$k]}" in
     SIKERES) echo -e "${GREEN}✔${NC} $k : ${GREEN}${RESULTS[$k]}${NC}" ;;
     KIHAGYVA) echo -e "${YELLOW}⏭${NC} $k : ${YELLOW}${RESULTS[$k]}${NC}" ;;
-    *) echo -e "${RED}✖${NC} $k : ${RED}${RESULTS[$k]}${NC}" ;;
+    *) echo -e "${RED}✖${NC} $k : ${RED}${RESULTS[$k]}${NC}"; any_fail=1 ;;
   esac
 done
 echo
-
-any_fail=0
-for k in "${!RESULTS[@]}"; do
-  if [[ "${RESULTS[$k]}" == "HIBA" ]]; then
-    any_fail=1
-  fi
-done
 
 if [[ "$any_fail" -eq 0 ]]; then
   echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
@@ -342,10 +300,9 @@ if [[ "$any_fail" -eq 0 ]]; then
 EOF
   echo -e "${NC}"
   echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
-
   exit 0
 else
-  echo -e "${YELLOW}KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE${NC}"
+  warn "KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE"
   log "Telepítés befejezve: RÉSZBEN SIKERES"
   exit 1
 fi
