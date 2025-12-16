@@ -2,11 +2,11 @@
 # Show-Off Server Installer - robust edition (VirtualBox/Debian/Ubuntu)
 # Installs: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
 # Uses config.conf toggles, logs, and does NOT abort on single-component failures.
- 
+
 set -u
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
- 
+
 ############################################
 # KONFIG
 ############################################
@@ -17,7 +17,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 else
   echo "WARN: config.conf nem található, alapértelmezett értékekkel futok."
 fi
- 
+
 : "${DRY_RUN:=false}"
 : "${INSTALL_APACHE:=true}"
 : "${INSTALL_SSH:=true}"
@@ -27,7 +27,7 @@ fi
 : "${INSTALL_PHP:=true}"
 : "${INSTALL_UFW:=true}"
 : "${LOGFILE:=/var/log/showoff_installer.log}"
- 
+
 ############################################
 # SZÍNEK
 ############################################
@@ -35,8 +35,54 @@ RED="\e[31m"
 GREEN="\e[32m"
 YELLOW="\e[33m"
 BLUE="\e[34m"
+PURPLE="\e[35m"
+CYAN="\e[36m"
+BOLD="\e[1m"
+DIM="\e[2m"
 NC="\e[0m"
- 
+
+############################################
+# KREATÍV UI HELPEREK (csak megjelenítés)
+############################################
+term_cols() { tput cols 2>/dev/null || echo 80; }
+hr() { printf '%*s\n' "$(term_cols)" '' | tr ' ' '═'; }
+
+center() {
+  local s="$1"
+  local w
+  w="$(term_cols)"
+  local pad=$(( (w - ${#s}) / 2 ))
+  (( pad < 0 )) && pad=0
+  printf "%*s%s\n" "$pad" "" "$s"
+}
+
+spinner() {
+  # spinner <pid> <text>
+  local pid="$1"
+  local text="$2"
+  local spin='|/-\'
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$(( (i + 1) % 4 ))
+    printf "\r${CYAN}${spin:$i:1}${NC} %s" "$text"
+    sleep 0.1
+  done
+  printf "\r%s\r" " "
+}
+
+panel() {
+  # panel <color> <title> <body...>
+  local color="$1"; shift
+  local title="$1"; shift
+  echo -e "${color}╔$(hr | tr '═' '═')╗${NC}" | sed 's/^.\{1\}//; s/.$//' # keep width consistent
+  echo -e "${color}║${NC} ${BOLD}${title}${NC}"
+  while [[ $# -gt 0 ]]; do
+    echo -e "${color}║${NC} $1"
+    shift
+  done
+  echo -e "${color}╚$(hr | tr '═' '═')╝${NC}" | sed 's/^.\{1\}//; s/.$//'
+}
+
 ############################################
 # ROOT CHECK
 ############################################
@@ -47,21 +93,21 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "  ./install.sh"
   exit 1
 fi
- 
+
 ############################################
 # LOG
 ############################################
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
- 
+
 log() {
   echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null
 }
- 
+
 ok()   { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
 fail() { echo -e "${RED}✖ $1${NC}"; log "FAIL: $1"; }
- 
+
 run() {
   if [[ "$DRY_RUN" == "true" ]]; then
     warn "[DRY-RUN] $*"
@@ -69,27 +115,28 @@ run() {
   fi
   "$@"
 }
- 
+
 ############################################
-# BANNER
+# BANNER (látványos)
 ############################################
 clear
-cat << "EOF"
-=========================================
-  SHOW-OFF SERVER INSTALLER vFINAL
-  Apache | Node-RED | MQTT | MariaDB | PHP | UFW
-  VirtualBox / Debian / Ubuntu - ROBUSZTUS
-=========================================
-EOF
+echo -e "${PURPLE}${BOLD}"
+center "╔══════════════════════════════════════════════════════╗"
+center "║              SHOW-OFF SERVER INSTALLER               ║"
+center "║  Apache | Node-RED | MQTT | MariaDB | PHP | UFW       ║"
+center "║         VirtualBox / Debian / Ubuntu - ROBUSZTUS      ║"
+center "╚══════════════════════════════════════════════════════╝"
+echo -e "${NC}"
 echo -e "${BLUE}Logfile:${NC} $LOGFILE"
+echo -e "${DIM}DRY_RUN=${DRY_RUN} | APACHE=${INSTALL_APACHE} SSH=${INSTALL_SSH} NR=${INSTALL_NODE_RED} MQTT=${INSTALL_MOSQUITTO} DB=${INSTALL_MARIADB} PHP=${INSTALL_PHP} UFW=${INSTALL_UFW}${NC}"
 echo
- 
+
 ############################################
 # EREDMÉNY TÁBLÁZAT
 ############################################
 declare -A RESULTS
 set_result() { RESULTS["$1"]="$2"; }
- 
+
 ############################################
 # APT HELPERS (STABIL)
 ############################################
@@ -97,17 +144,16 @@ apt_update() {
   log "APT csomaglista frissítése"
   run apt-get update -y
 }
- 
+
 apt_install() {
   log "Csomag telepítés: $*"
   run apt-get install -y "$@"
 }
- 
+
 ############################################
 # SAFE EXEC: ne álljon meg, hanem rögzítse a hibát
 ############################################
 safe_step() {
-  # safe_step "Label" command...
   local label="$1"; shift
   log "START: $label -> $*"
   if "$@"; then
@@ -118,40 +164,40 @@ safe_step() {
     return 1
   fi
 }
- 
+
 ############################################
-# TELEPÍTŐK
+# TELEPÍTŐK (alap logika változatlan)
 ############################################
 install_apache() {
   apt_install apache2 || return 1
   run systemctl enable --now apache2 || return 1
   return 0
 }
- 
+
 install_ssh() {
   apt_install openssh-server || return 1
   run systemctl enable --now ssh || return 1
   return 0
 }
- 
+
 install_mosquitto() {
   apt_install mosquitto mosquitto-clients || return 1
   run systemctl enable --now mosquitto || return 1
   return 0
 }
- 
+
 install_mariadb() {
   apt_install mariadb-server || return 1
   run systemctl enable --now mariadb || return 1
   return 0
 }
- 
+
 install_php() {
   apt_install php libapache2-mod-php php-mysql || return 1
   run systemctl restart apache2 || return 1
   return 0
 }
- 
+
 install_ufw() {
   apt_install ufw || return 1
   run ufw allow OpenSSH || return 1
@@ -161,11 +207,10 @@ install_ufw() {
   run ufw --force enable || return 1
   return 0
 }
- 
+
 install_node_red() {
-  # Node-RED installer néha nem exit 0-val tér vissza -> nem az exit code a döntő.
   apt_install curl ca-certificates || return 1
- 
+
   log "Node-RED telepítés (non-interactive --confirm-root)"
   set +e
   curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb \
@@ -173,44 +218,48 @@ install_node_red() {
   local rc=$?
   set -e
   log "Node-RED installer exit code: $rc"
- 
-  # próbáljuk indítani, ha létrejött
+
   run systemctl daemon-reload || true
   if systemctl list-unit-files | grep -q '^nodered\.service'; then
     run systemctl enable --now nodered.service || true
   fi
- 
-  # tényleges sikerfeltétel: fut a service (vagy legalább települt a parancs)
+
   if systemctl is-active --quiet nodered 2>/dev/null; then
     return 0
   fi
   if command -v node-red >/dev/null 2>&1; then
-    # Települt, de service nem fut -> ezt hibának vesszük
     return 1
   fi
   return 1
 }
- 
+
 ############################################
-# FUTTATÁS
+# FUTTATÁS (apt update + show-off animáció)
 ############################################
-# apt update mindig menjen (különben minden más bukhat)
-if apt_update; then
+echo -e "${CYAN}${BOLD}Rendszer előkészítés...${NC}"
+( apt_update ) & pid=$!
+spinner "$pid" "APT update fut..."
+wait "$pid"
+if [[ $? -eq 0 ]]; then
   ok "APT update kész"
 else
   fail "APT update sikertelen (internet/DNS/repo gond)."
-  # Itt még megpróbálhatjuk folytatni, de valószínűleg minden telepítés bukni fog.
 fi
- 
-# Lépések (config szerint)
+echo
+
+# Lépések (config szerint) – csak UI tuning
 run_install() {
   local var="$1"
   local label="$2"
   local func="$3"
- 
-  echo -e "${BLUE}==> ${label}${NC}"
+
+  echo -e "${BLUE}${BOLD}==> ${label}${NC}"
   if [[ "${!var:-false}" == "true" ]]; then
-    if safe_step "$label" "$func"; then
+    # futtatás spinnerrel
+    ( safe_step "$label" "$func" ) & pid=$!
+    spinner "$pid" "Telepítés: $label"
+    wait "$pid"
+    if [[ "${RESULTS[$label]}" == "SIKERES" ]]; then
       ok "$label OK"
     else
       fail "$label HIBA"
@@ -221,7 +270,7 @@ run_install() {
   fi
   echo
 }
- 
+
 run_install INSTALL_APACHE     "Apache2"   install_apache
 run_install INSTALL_SSH        "SSH"       install_ssh
 run_install INSTALL_MOSQUITTO  "Mosquitto" install_mosquitto
@@ -229,11 +278,11 @@ run_install INSTALL_NODE_RED   "Node-RED"  install_node_red
 run_install INSTALL_MARIADB    "MariaDB"   install_mariadb
 run_install INSTALL_PHP        "PHP"       install_php
 run_install INSTALL_UFW        "UFW"       install_ufw
- 
+
 ############################################
 # HEALTH CHECK + PORT CHECK
 ############################################
-log "HEALTH CHECK"
+panel "${CYAN}" "HEALTH CHECK" "Szolgáltatások állapota:"
 for svc in apache2 ssh mosquitto mariadb nodered; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     ok "$svc RUNNING"
@@ -241,42 +290,47 @@ for svc in apache2 ssh mosquitto mariadb nodered; do
     warn "$svc NEM FUT"
   fi
 done
- 
-log "PORT CHECK (80,1880,1883)"
+echo
+
+panel "${CYAN}" "PORT CHECK" "Ellenőrzés: 80 / 1880 / 1883"
 if command -v ss >/dev/null 2>&1; then
-  ss -tulpn | grep -E '(:80|:1880|:1883)\b' && ok "Portok rendben" || warn "Nem látok hallgatózó portot (lehet szolgáltatás nem fut)."
+  if ss -tulpn | grep -E '(:80|:1880|:1883)\b' >/dev/null; then
+    ok "Portok rendben"
+  else
+    warn "Nem látok hallgatózó portot (lehet szolgáltatás nem fut)."
+  fi
 else
   warn "ss parancs nem elérhető"
 fi
- 
-############################################
-# ÖSSZEFOGLALÓ
-############################################
 echo
-echo "================================="
-echo "  TELEPÍTÉSI ÖSSZEFOGLALÓ"
-echo "================================="
+
+############################################
+# ÖSSZEFOGLALÓ (dashboard)
+############################################
+echo -e "${BOLD}=================================${NC}"
+echo -e "${BOLD}  TELEPÍTÉSI DASHBOARD${NC}"
+echo -e "${BOLD}=================================${NC}"
 for k in "${!RESULTS[@]}"; do
-  echo "$k : ${RESULTS[$k]}"
+  case "${RESULTS[$k]}" in
+    SIKERES) echo -e "${GREEN}✔${NC} $k : ${GREEN}${RESULTS[$k]}${NC}" ;;
+    KIHAGYVA) echo -e "${YELLOW}⏭${NC} $k : ${YELLOW}${RESULTS[$k]}${NC}" ;;
+    *) echo -e "${RED}✖${NC} $k : ${RED}${RESULTS[$k]}${NC}" ;;
+  esac
 done
 echo
- 
-# Exit code: 0 ha minden SIKERES/KIHAGYVA, 1 ha volt HIBA
+
 any_fail=0
 for k in "${!RESULTS[@]}"; do
   if [[ "${RESULTS[$k]}" == "HIBA" ]]; then
     any_fail=1
   fi
 done
- 
+
 if [[ "$any_fail" -eq 0 ]]; then
   echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
   log "Telepítés befejezve: SIKERES"
- 
+
   echo
-  # LILA (magenta) szín
-  PURPLE="\e[35m"
- 
   echo -e "${PURPLE}"
   cat << "EOF"
 ██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
@@ -288,7 +342,7 @@ if [[ "$any_fail" -eq 0 ]]; then
 EOF
   echo -e "${NC}"
   echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
- 
+
   exit 0
 else
   echo -e "${YELLOW}KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE${NC}"
