@@ -2,11 +2,11 @@
 # Show-Off Server Installer - robust edition (VirtualBox/Debian/Ubuntu)
 # Installs: Apache2, SSH, Mosquitto(+clients), Node-RED, MariaDB, PHP, UFW
 # Uses config.conf toggles, logs, and does NOT abort on single-component failures.
-
+ 
 set -u
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export DEBIAN_FRONTEND=noninteractive
-
+ 
 ############################################
 # KONFIG
 ############################################
@@ -17,7 +17,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 else
   echo "WARN: config.conf nem található, alapértelmezett értékekkel futok."
 fi
-
+ 
 : "${DRY_RUN:=false}"
 : "${INSTALL_APACHE:=true}"
 : "${INSTALL_SSH:=true}"
@@ -27,7 +27,7 @@ fi
 : "${INSTALL_PHP:=true}"
 : "${INSTALL_UFW:=true}"
 : "${LOGFILE:=/var/log/showoff_installer.log}"
-
+ 
 ############################################
 # SZÍNEK
 ############################################
@@ -36,32 +36,7 @@ GREEN="\e[32m"
 YELLOW="\e[33m"
 BLUE="\e[34m"
 NC="\e[0m"
-
-############################################
-# VÁRAKOZÓS ZENE (OPCIONÁLIS, BIZTONSÁGOS)
-############################################
-MUSIC_PID=""
-
-start_music() {
-  # csak akkor indul, ha van speaker-test vagy aplay
-  if command -v speaker-test >/dev/null 2>&1; then
-    speaker-test -t sine -f 440 -l 0 >/dev/null 2>&1 &
-    MUSIC_PID=$!
-  elif command -v aplay >/dev/null 2>&1 && [[ -f /usr/share/sounds/alsa/Front_Center.wav ]]; then
-    while true; do
-      aplay /usr/share/sounds/alsa/Front_Center.wav >/dev/null 2>&1
-      sleep 2
-    done &
-    MUSIC_PID=$!
-  fi
-}
-
-stop_music() {
-  if [[ -n "$MUSIC_PID" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
-    kill "$MUSIC_PID" 2>/dev/null || true
-  fi
-}
-
+ 
 ############################################
 # ROOT CHECK
 ############################################
@@ -72,21 +47,21 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "  ./install.sh"
   exit 1
 fi
-
+ 
 ############################################
 # LOG
 ############################################
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
-
+ 
 log() {
   echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null
 }
-
+ 
 ok()   { echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
 fail() { echo -e "${RED}✖ $1${NC}"; log "FAIL: $1"; }
-
+ 
 run() {
   if [[ "$DRY_RUN" == "true" ]]; then
     warn "[DRY-RUN] $*"
@@ -94,7 +69,7 @@ run() {
   fi
   "$@"
 }
-
+ 
 ############################################
 # BANNER
 ############################################
@@ -108,13 +83,13 @@ cat << "EOF"
 EOF
 echo -e "${BLUE}Logfile:${NC} $LOGFILE"
 echo
-
+ 
 ############################################
 # EREDMÉNY TÁBLÁZAT
 ############################################
 declare -A RESULTS
 set_result() { RESULTS["$1"]="$2"; }
-
+ 
 ############################################
 # APT HELPERS (STABIL)
 ############################################
@@ -122,12 +97,12 @@ apt_update() {
   log "APT csomaglista frissítése"
   run apt-get update -y
 }
-
+ 
 apt_install() {
   log "Csomag telepítés: $*"
   run apt-get install -y "$@"
 }
-
+ 
 ############################################
 # SAFE EXEC: ne álljon meg, hanem rögzítse a hibát
 ############################################
@@ -143,7 +118,7 @@ safe_step() {
     return 1
   fi
 }
-
+ 
 ############################################
 # TELEPÍTŐK
 ############################################
@@ -152,31 +127,31 @@ install_apache() {
   run systemctl enable --now apache2 || return 1
   return 0
 }
-
+ 
 install_ssh() {
   apt_install openssh-server || return 1
   run systemctl enable --now ssh || return 1
   return 0
 }
-
+ 
 install_mosquitto() {
   apt_install mosquitto mosquitto-clients || return 1
   run systemctl enable --now mosquitto || return 1
   return 0
 }
-
+ 
 install_mariadb() {
   apt_install mariadb-server || return 1
   run systemctl enable --now mariadb || return 1
   return 0
 }
-
+ 
 install_php() {
   apt_install php libapache2-mod-php php-mysql || return 1
   run systemctl restart apache2 || return 1
   return 0
 }
-
+ 
 install_ufw() {
   apt_install ufw || return 1
   run ufw allow OpenSSH || return 1
@@ -186,11 +161,11 @@ install_ufw() {
   run ufw --force enable || return 1
   return 0
 }
-
+ 
 install_node_red() {
   # Node-RED installer néha nem exit 0-val tér vissza -> nem az exit code a döntő.
   apt_install curl ca-certificates || return 1
-
+ 
   log "Node-RED telepítés (non-interactive --confirm-root)"
   set +e
   curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb \
@@ -198,13 +173,13 @@ install_node_red() {
   local rc=$?
   set -e
   log "Node-RED installer exit code: $rc"
-
+ 
   # próbáljuk indítani, ha létrejött
   run systemctl daemon-reload || true
   if systemctl list-unit-files | grep -q '^nodered\.service'; then
     run systemctl enable --now nodered.service || true
   fi
-
+ 
   # tényleges sikerfeltétel: fut a service (vagy legalább települt a parancs)
   if systemctl is-active --quiet nodered 2>/dev/null; then
     return 0
@@ -215,27 +190,24 @@ install_node_red() {
   fi
   return 1
 }
-
+ 
 ############################################
 # FUTTATÁS
 ############################################
 # apt update mindig menjen (különben minden más bukhat)
-
-start_music
-
 if apt_update; then
   ok "APT update kész"
 else
   fail "APT update sikertelen (internet/DNS/repo gond)."
   # Itt még megpróbálhatjuk folytatni, de valószínűleg minden telepítés bukni fog.
 fi
-
+ 
 # Lépések (config szerint)
 run_install() {
   local var="$1"
   local label="$2"
   local func="$3"
-
+ 
   echo -e "${BLUE}==> ${label}${NC}"
   if [[ "${!var:-false}" == "true" ]]; then
     if safe_step "$label" "$func"; then
@@ -249,7 +221,7 @@ run_install() {
   fi
   echo
 }
-
+ 
 run_install INSTALL_APACHE     "Apache2"   install_apache
 run_install INSTALL_SSH        "SSH"       install_ssh
 run_install INSTALL_MOSQUITTO  "Mosquitto" install_mosquitto
@@ -257,7 +229,7 @@ run_install INSTALL_NODE_RED   "Node-RED"  install_node_red
 run_install INSTALL_MARIADB    "MariaDB"   install_mariadb
 run_install INSTALL_PHP        "PHP"       install_php
 run_install INSTALL_UFW        "UFW"       install_ufw
-
+ 
 ############################################
 # HEALTH CHECK + PORT CHECK
 ############################################
@@ -269,14 +241,14 @@ for svc in apache2 ssh mosquitto mariadb nodered; do
     warn "$svc NEM FUT"
   fi
 done
-
+ 
 log "PORT CHECK (80,1880,1883)"
 if command -v ss >/dev/null 2>&1; then
   ss -tulpn | grep -E '(:80|:1880|:1883)\b' && ok "Portok rendben" || warn "Nem látok hallgatózó portot (lehet szolgáltatás nem fut)."
 else
   warn "ss parancs nem elérhető"
 fi
-
+ 
 ############################################
 # ÖSSZEFOGLALÓ
 ############################################
@@ -288,7 +260,7 @@ for k in "${!RESULTS[@]}"; do
   echo "$k : ${RESULTS[$k]}"
 done
 echo
-
+ 
 # Exit code: 0 ha minden SIKERES/KIHAGYVA, 1 ha volt HIBA
 any_fail=0
 for k in "${!RESULTS[@]}"; do
@@ -296,15 +268,15 @@ for k in "${!RESULTS[@]}"; do
     any_fail=1
   fi
 done
-
+ 
 if [[ "$any_fail" -eq 0 ]]; then
   echo -e "${GREEN}KÉSZ – minden lépés rendben lefutott.${NC}"
   log "Telepítés befejezve: SIKERES"
-
+ 
   echo
   # LILA (magenta) szín
   PURPLE="\e[35m"
-
+ 
   echo -e "${PURPLE}"
   cat << "EOF"
 ██╗  ██╗ █████╗      ██╗██████╗  █████╗     ██╗     ██╗██╗      █████╗ ██╗  ██╗
@@ -316,13 +288,10 @@ if [[ "$any_fail" -eq 0 ]]; then
 EOF
   echo -e "${NC}"
   echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
-
-  stop_music
+ 
   exit 0
 else
   echo -e "${YELLOW}KÉSZ – volt sikertelen lépés. Nézd a logot: $LOGFILE${NC}"
   log "Telepítés befejezve: RÉSZBEN SIKERES"
-
-  stop_music
   exit 1
 fi
