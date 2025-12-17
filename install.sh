@@ -22,6 +22,11 @@ declare -A COMPONENT_STATUS
 # értékek: ok | skipped | error | removed
 
 ############################################
+# HOTKEYS INPUT ÜTKÖZÉS FIX
+############################################
+HOTKEYS_PAUSED=0
+
+############################################
 # SZÍNEK
 ############################################
 RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
@@ -70,33 +75,41 @@ spinner() {
   printf "\r%s\r" " "
 }
 
+############################################
+# INPUT / MENÜK (HOTKEYS-Pause-al)
+############################################
 ask_yn(){
+  HOTKEYS_PAUSED=1
   while true; do
     read -rp "$1 (i/n): " a
-    case "$a" in i|I) return 0;; n|N) return 1;; *) echo "i vagy n";; esac
+    case "${a:-}" in
+      i|I) HOTKEYS_PAUSED=0; return 0;;
+      n|N) HOTKEYS_PAUSED=0; return 1;;
+      *) echo "i vagy n";;
+    esac
   done
 }
 
 ask_action_installed(){
-  # telepítve esetén: i=telepít/újra, t=töröl, n=kihagy
+  HOTKEYS_PAUSED=1
   while true; do
     read -rp "$1 [i]=futtat/újra  [t]=töröl  [n]=kihagy: " a
-    case "$a" in
-      i|I) echo "install"; return 0;;
-      t|T) echo "remove";  return 0;;
-      n|N) echo "skip";    return 0;;
+    case "${a:-}" in
+      i|I) HOTKEYS_PAUSED=0; echo "install"; return 0;;
+      t|T) HOTKEYS_PAUSED=0; echo "remove";  return 0;;
+      n|N) HOTKEYS_PAUSED=0; echo "skip";    return 0;;
       *) echo "i / t / n";;
     esac
   done
 }
 
 ask_action_not_installed(){
-  # nincs telepítve esetén: i=telepít, n=kihagy
+  HOTKEYS_PAUSED=1
   while true; do
     read -rp "$1 [i]=telepít  [n]=kihagy: " a
-    case "$a" in
-      i|I) echo "install"; return 0;;
-      n|N) echo "skip";    return 0;;
+    case "${a:-}" in
+      i|I) HOTKEYS_PAUSED=0; echo "install"; return 0;;
+      n|N) HOTKEYS_PAUSED=0; echo "skip";    return 0;;
       *) echo "i / n";;
     esac
   done
@@ -158,6 +171,10 @@ music_toggle(){ if kill -0 "${MUSIC_PID:-}" 2>/dev/null; then music_stop; else m
 
 hotkeys(){
   while true; do
+    if [[ "${HOTKEYS_PAUSED:-0}" -eq 1 ]]; then
+      sleep 0.1
+      continue
+    fi
     if read -rsn1 -t 0.4 k; then
       case "$k" in
         [Tt]) music_toggle ;;
@@ -169,7 +186,7 @@ hotkeys(){
 }
 
 ############################################
-# TELEPÍTŐK
+# TELEPÍTŐK + TÖRLÉSEK
 ############################################
 install_apache(){ apt_install apache2 && svc_on apache2; }
 remove_apache(){ svc_off apache2; apt_purge apache2 apache2-bin apache2-data apache2-utils || true; apt_autoremove || true; }
@@ -184,7 +201,6 @@ install_mariadb(){ apt_install mariadb-server && svc_on mariadb; }
 remove_mariadb(){ svc_off mariadb; apt_purge mariadb-server || true; apt_autoremove || true; }
 
 install_php(){
-  # NEM telepítünk dependency-t kérdés nélkül
   if ! pkg_installed apache2; then
     warn "PHP-hoz kell Apache2."
     ask_yn "Apache2 nincs telepítve. Telepítsem most az Apache2-t?" || { warn "Apache2 nélkül PHP telepítés kihagyva."; return 1; }
@@ -194,7 +210,6 @@ install_php(){
   systemctl restart apache2 >/dev/null 2>&1 || true
 }
 remove_php(){
-  # Konzervatív: csak a fő csomagok
   apt_purge php libapache2-mod-php php-mysql || true
   apt_autoremove || true
   systemctl restart apache2 >/dev/null 2>&1 || true
@@ -203,7 +218,6 @@ remove_php(){
 nr_installed(){
   command -v node-red >/dev/null 2>&1 || systemctl list-unit-files | grep -q '^nodered\.service'
 }
-
 install_node_red(){
   if nr_installed; then
     ok "Node-RED már telepítve van – nincs teendő."
@@ -212,7 +226,6 @@ install_node_red(){
   fi
 
   apt_install curl ca-certificates
-
   if ! have_internet; then
     warn "Nincs internet – Node-RED nem telepíthető."
     return 1
@@ -224,17 +237,11 @@ install_node_red(){
   systemctl daemon-reload
   svc_on nodered.service
 }
-
 remove_node_red(){
-  # best-effort eltávolítás (a Node-RED installer által felrakott csomag/egység eltérhet disztrónként)
   svc_off nodered.service
   svc_off node-red.service
-
-  # több lehetséges csomagnév
   apt_purge nodered node-red || true
   apt_autoremove || true
-
-  # maradék systemd unit (ha a telepítő hozta létre)
   rm -f /etc/systemd/system/nodered.service /lib/systemd/system/nodered.service 2>/dev/null || true
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
@@ -257,13 +264,12 @@ remove_ufw(){
 # FIX STÁTUSZ PANEL (nem mozog)
 ############################################
 STATUS_ROW=1
-STATUS_PANEL_HEIGHT=12  # panel "rezervált" magasság
+STATUS_PANEL_HEIGHT=12
 
 draw_status_panel(){
   local row="$1"
   local cols="$2"
 
-  # Panel területének törlése (csak a panel sorai)
   for ((i=0; i<STATUS_PANEL_HEIGHT; i++)); do
     tput cup $((row+i)) 0 2>/dev/null || return
     printf "%*s" "$cols" ""
@@ -432,6 +438,7 @@ run_component(){
   local name="$1" check="$2" install="$3" remove="$4"
 
   echo -e "${BLUE}${BOLD}==> $name${NC}"
+
   local is_installed="no"
   if eval "$check"; then
     is_installed="yes"
@@ -483,13 +490,13 @@ run_component(){
   esac
 }
 
-run_component "Apache2"   "pkg_installed apache2"        "install_apache"   "remove_apache"
-run_component "SSH"       "pkg_installed openssh-server" "install_ssh"      "remove_ssh"
+run_component "Apache2"   "pkg_installed apache2"        "install_apache"    "remove_apache"
+run_component "SSH"       "pkg_installed openssh-server" "install_ssh"       "remove_ssh"
 run_component "Mosquitto" "pkg_installed mosquitto"      "install_mosquitto" "remove_mosquitto"
-run_component "Node-RED"  "nr_installed"                 "install_node_red" "remove_node_red"
-run_component "MariaDB"   "pkg_installed mariadb-server" "install_mariadb"  "remove_mariadb"
+run_component "Node-RED"  "nr_installed"                 "install_node_red"  "remove_node_red"
+run_component "MariaDB"   "pkg_installed mariadb-server" "install_mariadb"   "remove_mariadb"
 run_component "PHP"       "(pkg_installed php || pkg_installed libapache2-mod-php)" "install_php" "remove_php"
-run_component "UFW"       "pkg_installed ufw"            "install_ufw"      "remove_ufw"
+run_component "UFW"       "pkg_installed ufw"            "install_ufw"       "remove_ufw"
 
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
