@@ -4,12 +4,12 @@ set -o pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-export SDL_AUDIODRIVER=alsa
 
 ############################################
 # KONFIG
 ############################################
 LOGFILE="/var/log/showoff_installer.log"
+MUSIC_LOG="/var/log/showoff_music.log"
 
 ENABLE_MUSIC=true
 YOUTUBE_URL="https://www.youtube.com/watch?v=0Wi8Fv0AJA4&list=RD0Wi8Fv0AJA4&start_radio=1"
@@ -46,6 +46,8 @@ fi
 ############################################
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
+touch "$MUSIC_LOG" 2>/dev/null || true
+
 log(){ echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
 ok(){   echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn(){ echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
@@ -62,6 +64,7 @@ title(){
   echo -e "${PURPLE}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
   echo -e "${BLUE}Hotkeys:${NC} T=toggle zene  M=stop zene  H=súgó"
   echo -e "${DIM}Log:${NC} $LOGFILE"
+  echo -e "${DIM}Music log:${NC} $MUSIC_LOG"
   echo
 }
 
@@ -128,38 +131,78 @@ svc_off(){ systemctl disable --now "$1" >/dev/null 2>&1 || true; }
 
 have_internet(){
   command -v curl >/dev/null 2>&1 || apt_install curl >/dev/null 2>&1 || true
-  curl -fsSL --max-time 4 https://deb.debian.org >/dev/null 2>&1
+  curl -fsSL --max-time 5 https://deb.debian.org >/dev/null 2>&1
 }
 
 ############################################
-# YOUTUBE ZENE (csendes)
+# YOUTUBE ZENE (robosztus, logolva)
 ############################################
 MUSIC_PID=""
 
 ensure_music_tools(){
-  command -v yt-dlp >/dev/null 2>&1 || apt_install yt-dlp
-  command -v ffplay >/dev/null 2>&1 || apt_install ffmpeg
+  # Próbáljuk feltenni. Ha fail: log + vissza false.
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    apt_install yt-dlp >>"$MUSIC_LOG" 2>&1 || return 1
+  fi
+  if ! command -v ffplay >/dev/null 2>&1; then
+    apt_install ffmpeg >>"$MUSIC_LOG" 2>&1 || return 1
+  fi
+  return 0
 }
 
 music_start(){
-  [[ "$ENABLE_MUSIC" != true ]] && return
-  [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null && return
+  [[ "$ENABLE_MUSIC" != true ]] && return 0
+
+  # ha már megy
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    return 0
+  fi
+
+  # előző log fejrész
+  {
+    echo "============================================================"
+    echo "$(date '+%F %T') | MUSIC_START"
+    echo "URL: $YOUTUBE_URL"
+  } >>"$MUSIC_LOG" 2>&1
+
   if ! have_internet; then
     warn "Nincs internet – zene kihagyva."
-    ENABLE_MUSIC=false
-    return
+    echo "$(date '+%F %T') | NO_INTERNET" >>"$MUSIC_LOG" 2>&1
+    return 1
   fi
-  ensure_music_tools
+
+  if ! ensure_music_tools; then
+    warn "Zene eszközök telepítése nem sikerült (nézd meg: $MUSIC_LOG)."
+    echo "$(date '+%F %T') | TOOLS_INSTALL_FAILED" >>"$MUSIC_LOG" 2>&1
+    return 1
+  fi
+
+  # Indítás: ne nyeljük el a hibát -> MUSIC_LOG-ba megy
   (
-    yt-dlp -f bestaudio -o - "$YOUTUBE_URL" 2>/dev/null |
-    ffplay -nodisp -loglevel error -autoexit -loop 0 -volume "$MUSIC_VOLUME" - 2>/dev/null
+    set -o pipefail
+    yt-dlp -f bestaudio -o - "$YOUTUBE_URL" 2>>"$MUSIC_LOG" |
+      ffplay -nodisp -loglevel error -autoexit -loop 0 -volume "$MUSIC_VOLUME" - 2>>"$MUSIC_LOG"
   ) &
+
   MUSIC_PID=$!
-  ok "Zene elindult (T=toggle, M=stop, H=súgó)"
+
+  # Ellenőrzés: tényleg életben maradt-e
+  sleep 0.7
+  if kill -0 "$MUSIC_PID" 2>/dev/null; then
+    ok "Zene elindult (T=toggle, M=stop)."
+    echo "$(date '+%F %T') | MUSIC_OK pid=$MUSIC_PID" >>"$MUSIC_LOG" 2>&1
+    return 0
+  else
+    warn "Zene nem indult el. Nézd meg: $MUSIC_LOG"
+    echo "$(date '+%F %T') | MUSIC_FAILED (process exited)" >>"$MUSIC_LOG" 2>&1
+    MUSIC_PID=""
+    return 1
+  fi
 }
 
 music_stop(){
   if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    echo "$(date '+%F %T') | MUSIC_STOP pid=$MUSIC_PID" >>"$MUSIC_LOG" 2>&1
     kill "$MUSIC_PID" 2>/dev/null || true
     sleep 0.2
     kill -9 "$MUSIC_PID" 2>/dev/null || true
@@ -167,7 +210,13 @@ music_stop(){
   fi
 }
 
-music_toggle(){ if kill -0 "${MUSIC_PID:-}" 2>/dev/null; then music_stop; else music_start; fi; }
+music_toggle(){
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    music_stop
+  else
+    music_start || true
+  fi
+}
 
 hotkeys(){
   while true; do
@@ -179,7 +228,7 @@ hotkeys(){
       case "$k" in
         [Tt]) music_toggle ;;
         [Mm]) music_stop ;;
-        [Hh]) echo -e "${BLUE}T=toggle  M=stop  Q=kilépés a BEFEJEZODOTT képernyőről  Log=$LOGFILE${NC}" ;;
+        [Hh]) echo -e "${BLUE}T=toggle  M=stop  Q=kilépés a BEFEJEZODOTT képernyőről  Log=$LOGFILE  MusicLog=$MUSIC_LOG${NC}" ;;
       esac
     fi
   done
@@ -290,6 +339,7 @@ draw_status_panel(){
     esac
   done
   printf "%bLog:%b %s\n" "$DIM" "$NC" "$LOGFILE"
+  printf "%bMusic log:%b %s\n" "$DIM" "$NC" "$MUSIC_LOG"
 }
 
 ############################################
@@ -417,7 +467,7 @@ title
 hotkeys & HOTKEY_PID=$!
 
 if ask_yn "Indítsak háttérzenét?"; then
-  music_start
+  music_start || true
 else
   warn "Zene kihagyva."
 fi
