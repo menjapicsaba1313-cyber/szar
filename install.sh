@@ -21,6 +21,9 @@ MUSIC_VOLUME=80
 declare -A COMPONENT_STATUS
 # értékek: ok | skipped | error | removed
 
+# ÚJ: megjegyezzük, hogy a döntés pillanatában telepítve volt-e (yes/no)
+declare -A COMPONENT_PRESENT
+
 ############################################
 # HOTKEYS INPUT ÜTKÖZÉS FIX
 ############################################
@@ -140,7 +143,6 @@ have_internet(){
 MUSIC_PID=""
 
 ensure_music_tools(){
-  # Próbáljuk feltenni. Ha fail: log + vissza false.
   if ! command -v yt-dlp >/dev/null 2>&1; then
     apt_install yt-dlp >>"$MUSIC_LOG" 2>&1 || return 1
   fi
@@ -153,12 +155,10 @@ ensure_music_tools(){
 music_start(){
   [[ "$ENABLE_MUSIC" != true ]] && return 0
 
-  # ha már megy
   if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
     return 0
   fi
 
-  # előző log fejrész
   {
     echo "============================================================"
     echo "$(date '+%F %T') | MUSIC_START"
@@ -177,7 +177,6 @@ music_start(){
     return 1
   fi
 
-  # Indítás: ne nyeljük el a hibát -> MUSIC_LOG-ba megy
   (
     set -o pipefail
     yt-dlp -f bestaudio -o - "$YOUTUBE_URL" 2>>"$MUSIC_LOG" |
@@ -186,7 +185,6 @@ music_start(){
 
   MUSIC_PID=$!
 
-  # Ellenőrzés: tényleg életben maradt-e
   sleep 0.7
   if kill -0 "$MUSIC_PID" 2>/dev/null; then
     ok "Zene elindult (T=toggle, M=stop)."
@@ -313,7 +311,7 @@ remove_ufw(){
 # FIX STÁTUSZ PANEL (nem mozog)
 ############################################
 STATUS_ROW=1
-STATUS_PANEL_HEIGHT=12
+STATUS_PANEL_HEIGHT=13
 
 draw_status_panel(){
   local row="$1"
@@ -327,17 +325,27 @@ draw_status_panel(){
   tput cup "$row" 0 2>/dev/null || return
   printf "%bÁllapot összegzés:%b\n" "$BOLD" "$NC"
 
-  local comp st
+  local comp st present note
   for comp in "Apache2" "SSH" "Mosquitto" "Node-RED" "MariaDB" "PHP" "UFW"; do
     st="${COMPONENT_STATUS[$comp]:-skipped}"
+    present="${COMPONENT_PRESENT[$comp]:-unknown}"
+
+    # Skip esetén kiírjuk, hogy telepítve volt-e
+    note=""
+    if [[ "$st" == "skipped" ]]; then
+      if [[ "$present" == "yes" ]]; then note=" (telepítve)"; fi
+      if [[ "$present" == "no"  ]]; then note=" (nincs telepítve)"; fi
+    fi
+
     case "$st" in
-      ok)      printf " %b✔%b %s – kész\n"      "$GREEN" "$NC" "$comp" ;;
-      skipped) printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
-      removed) printf " %b🗑%b %s – törölve\n"    "$CYAN" "$NC" "$comp" ;;
-      error)   printf " %b✖%b %s – hiba\n"       "$RED" "$NC" "$comp" ;;
-      *)       printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
+      ok)      printf " %b✔%b %s – kész\n"           "$GREEN" "$NC" "$comp" ;;
+      skipped) printf " %b•%b %s – kihagyva%s\n"     "$YELLOW" "$NC" "$comp" "$note" ;;
+      removed) printf " %b🗑%b %s – törölve\n"         "$CYAN" "$NC" "$comp" ;;
+      error)   printf " %b✖%b %s – hiba\n"           "$RED" "$NC" "$comp" ;;
+      *)       printf " %b•%b %s – kihagyva\n"       "$YELLOW" "$NC" "$comp" ;;
     esac
   done
+
   printf "%bLog:%b %s\n" "$DIM" "$NC" "$LOGFILE"
   printf "%bMusic log:%b %s\n" "$DIM" "$NC" "$MUSIC_LOG"
 }
@@ -363,16 +371,6 @@ befejezodott_spin_color_forever() {
     "0 -3" "3 -2" "6 0" "3 2"
     "0 3" "-3 2" "-6 0" "-3 -2"
   )
-
-  if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
-    echo "BEFEJEZODOTT"
-    echo "Állapot összegzés:"
-    for comp in "Apache2" "SSH" "Mosquitto" "Node-RED" "MariaDB" "PHP" "UFW"; do
-      echo " - $comp: ${COMPONENT_STATUS[$comp]:-skipped}"
-    done
-    echo "(Stahl Dávid Jenő)"
-    return 0
-  fi
 
   local rows cols
   rows="$(tput lines 2>/dev/null || echo 24)"
@@ -496,6 +494,9 @@ run_component(){
   else
     echo -e "${DIM}Állapot:${NC} ${YELLOW}nincs telepítve${NC}"
   fi
+
+  # ÚJ: eltároljuk az "eredeti" telepítettséget (összegzéshez)
+  COMPONENT_PRESENT["$name"]="$is_installed"
 
   local action=""
   if [[ "$is_installed" == "yes" ]]; then
