@@ -19,7 +19,7 @@ MUSIC_VOLUME=80
 # ÁLLAPOTOK (összegzéshez)
 ############################################
 declare -A COMPONENT_STATUS
-# értékek: ok | skipped | error
+# értékek: ok | skipped | error | removed
 
 ############################################
 # SZÍNEK
@@ -77,13 +77,41 @@ ask_yn(){
   done
 }
 
+ask_action_installed(){
+  # telepítve esetén: i=telepít/újra, t=töröl, n=kihagy
+  while true; do
+    read -rp "$1 [i]=futtat/újra  [t]=töröl  [n]=kihagy: " a
+    case "$a" in
+      i|I) echo "install"; return 0;;
+      t|T) echo "remove";  return 0;;
+      n|N) echo "skip";    return 0;;
+      *) echo "i / t / n";;
+    esac
+  done
+}
+
+ask_action_not_installed(){
+  # nincs telepítve esetén: i=telepít, n=kihagy
+  while true; do
+    read -rp "$1 [i]=telepít  [n]=kihagy: " a
+    case "$a" in
+      i|I) echo "install"; return 0;;
+      n|N) echo "skip";    return 0;;
+      *) echo "i / n";;
+    esac
+  done
+}
+
 ############################################
 # APT / CHECK
 ############################################
 apt_install(){ apt-get install -y "$@"; }
 apt_update(){ apt-get update -y; }
+apt_purge(){ apt-get purge -y "$@"; }
+apt_autoremove(){ apt-get autoremove -y; }
 pkg_installed(){ dpkg -s "$1" >/dev/null 2>&1; }
 svc_on(){ systemctl enable --now "$1" >/dev/null 2>&1; }
+svc_off(){ systemctl disable --now "$1" >/dev/null 2>&1 || true; }
 
 have_internet(){
   command -v curl >/dev/null 2>&1 || apt_install curl >/dev/null 2>&1 || true
@@ -144,11 +172,19 @@ hotkeys(){
 # TELEPÍTŐK
 ############################################
 install_apache(){ apt_install apache2 && svc_on apache2; }
+remove_apache(){ svc_off apache2; apt_purge apache2 apache2-bin apache2-data apache2-utils || true; apt_autoremove || true; }
+
 install_ssh(){ apt_install openssh-server && svc_on ssh; }
+remove_ssh(){ svc_off ssh; apt_purge openssh-server || true; apt_autoremove || true; }
+
 install_mosquitto(){ apt_install mosquitto mosquitto-clients && svc_on mosquitto; }
+remove_mosquitto(){ svc_off mosquitto; apt_purge mosquitto mosquitto-clients || true; apt_autoremove || true; }
+
 install_mariadb(){ apt_install mariadb-server && svc_on mariadb; }
+remove_mariadb(){ svc_off mariadb; apt_purge mariadb-server || true; apt_autoremove || true; }
 
 install_php(){
+  # NEM telepítünk dependency-t kérdés nélkül
   if ! pkg_installed apache2; then
     warn "PHP-hoz kell Apache2."
     ask_yn "Apache2 nincs telepítve. Telepítsem most az Apache2-t?" || { warn "Apache2 nélkül PHP telepítés kihagyva."; return 1; }
@@ -157,12 +193,17 @@ install_php(){
   apt_install php libapache2-mod-php php-mysql
   systemctl restart apache2 >/dev/null 2>&1 || true
 }
+remove_php(){
+  # Konzervatív: csak a fő csomagok
+  apt_purge php libapache2-mod-php php-mysql || true
+  apt_autoremove || true
+  systemctl restart apache2 >/dev/null 2>&1 || true
+}
 
 nr_installed(){
   command -v node-red >/dev/null 2>&1 || systemctl list-unit-files | grep -q '^nodered\.service'
 }
 
-# JAVÍTVA: ha már telepítve van, ne legyen internet-check miatti "hiba"
 install_node_red(){
   if nr_installed; then
     ok "Node-RED már telepítve van – nincs teendő."
@@ -184,6 +225,20 @@ install_node_red(){
   svc_on nodered.service
 }
 
+remove_node_red(){
+  # best-effort eltávolítás (a Node-RED installer által felrakott csomag/egység eltérhet disztrónként)
+  svc_off nodered.service
+  svc_off node-red.service
+
+  # több lehetséges csomagnév
+  apt_purge nodered node-red || true
+  apt_autoremove || true
+
+  # maradék systemd unit (ha a telepítő hozta létre)
+  rm -f /etc/systemd/system/nodered.service /lib/systemd/system/nodered.service 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 install_ufw(){
   apt_install ufw
   ufw allow OpenSSH
@@ -192,18 +247,23 @@ install_ufw(){
   ufw allow 1883/tcp
   ufw --force enable
 }
+remove_ufw(){
+  ufw --force disable >/dev/null 2>&1 || true
+  apt_purge ufw || true
+  apt_autoremove || true
+}
 
 ############################################
 # FIX STÁTUSZ PANEL (nem mozog)
 ############################################
 STATUS_ROW=1
-STATUS_PANEL_HEIGHT=11  # panel "rezervált" magasság (hogy a mozgó art ne érjen bele)
+STATUS_PANEL_HEIGHT=12  # panel "rezervált" magasság
 
 draw_status_panel(){
   local row="$1"
   local cols="$2"
 
-  # Panel területének törlése (csak a panel sorai, nem az egész képernyő)
+  # Panel területének törlése (csak a panel sorai)
   for ((i=0; i<STATUS_PANEL_HEIGHT; i++)); do
     tput cup $((row+i)) 0 2>/dev/null || return
     printf "%*s" "$cols" ""
@@ -218,6 +278,7 @@ draw_status_panel(){
     case "$st" in
       ok)      printf " %b✔%b %s – kész\n"      "$GREEN" "$NC" "$comp" ;;
       skipped) printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
+      removed) printf " %b🗑%b %s – törölve\n"    "$CYAN" "$NC" "$comp" ;;
       error)   printf " %b✖%b %s – hiba\n"       "$RED" "$NC" "$comp" ;;
       *)       printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
     esac
@@ -268,12 +329,10 @@ befejezodott_spin_color_forever() {
   local arth=${#art[@]}
   local artw=$maxw
 
-  # Alappozíció (közép), de a panel miatt minimum lejjebb kényszerítjük
   local base_y=$(( (rows - arth) / 2 ))
   local base_x=$(( (cols - artw) / 2 ))
   (( base_x < 0 )) && base_x=0
 
-  # Panel alatt kezdődjön a mozgó rész
   local min_y=$((STATUS_ROW + STATUS_PANEL_HEIGHT + 1))
   (( base_y < min_y )) && base_y=$min_y
 
@@ -285,10 +344,7 @@ befejezodott_spin_color_forever() {
   }
   trap cleanup_finish INT TERM
 
-  # Egyszeri full clear induláskor
   printf "\033[2J\033[H"
-
-  # Fix panel kirajzolása
   draw_status_panel "$STATUS_ROW" "$cols"
 
   local frame=0
@@ -297,20 +353,14 @@ befejezodott_spin_color_forever() {
   local prev_x=-1
 
   while true; do
-    # Q = kilépés
     if read -rsn1 -t 0.05 k; then
       case "$k" in
-        [Qq])
-          cleanup_finish
-          return 0
-          ;;
+        [Qq]) cleanup_finish; return 0 ;;
       esac
     fi
 
-    # Panel fixen marad (frissítjük, hogy mindig látszódjon)
     draw_status_panel "$STATUS_ROW" "$cols"
 
-    # következő pozíció
     local dx dy
     read -r dx dy <<< "${positions[$pos_idx]}"
     pos_idx=$(( (pos_idx + 1) % ${#positions[@]} ))
@@ -318,7 +368,6 @@ befejezodott_spin_color_forever() {
     local y=$(( base_y + dy ))
     local x=$(( base_x + dx ))
 
-    # clamp: ne érjen a panelbe, és ne lógjon ki
     (( y < min_y )) && y=$min_y
     (( x < 0 )) && x=0
     (( y + arth >= rows-2 )) && y=$(( rows-2-arth ))
@@ -326,7 +375,6 @@ befejezodott_spin_color_forever() {
     (( y < min_y )) && y=$min_y
     (( x < 0 )) && x=0
 
-    # előző art terület törlése (csak a mozgó art téglalapja)
     if (( prev_y >= 0 && prev_x >= 0 )); then
       for ((i=0; i<arth; i++)); do
         tput cup $((prev_y+i)) "$prev_x" 2>/dev/null || printf "\033[%d;%dH" "$((prev_y+i+1))" "$((prev_x+1))"
@@ -334,14 +382,12 @@ befejezodott_spin_color_forever() {
       done
     fi
 
-    # új art kirajzolása
     local c="${colors[$((frame % ${#colors[@]}))]}"
     for i in "${!art[@]}"; do
       tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
       printf "%b%s%b" "$c" "${art[$i]}" "$reset"
     done
 
-    # alsó sor: név + kilépés info (fixen alul)
     tput cup $((rows-2)) 0 2>/dev/null || true
     printf "%b(%s)%b  %b[Q]=kilépés  Ctrl+C=kilépés%b" "${PURPLE}" "Stahl Dávid Jenő" "${reset}" "${DIM}" "${reset}"
     printf "\033[K"
@@ -364,7 +410,6 @@ trap 'music_stop 2>/dev/null || true' EXIT
 title
 hotkeys & HOTKEY_PID=$!
 
-# Zene: ne induljon el automatikusan, csak kérdésre
 if ask_yn "Indítsak háttérzenét?"; then
   music_start
 else
@@ -373,7 +418,6 @@ fi
 
 hr
 echo -e "${BOLD}Előkészítés${NC}"
-# APT UPDATE se fusson automatikusan
 if ask_yn "Futtassak apt-get update-et? (ajánlott)"; then
   ( apt_update ) & pid=$!
   spinner "$pid" "apt-get update fut..."
@@ -385,44 +429,69 @@ echo
 hr
 
 run_component(){
-  local name="$1" check="$2" install="$3"
+  local name="$1" check="$2" install="$3" remove="$4"
 
   echo -e "${BLUE}${BOLD}==> $name${NC}"
+  local is_installed="no"
   if eval "$check"; then
+    is_installed="yes"
     echo -e "${DIM}Állapot:${NC} ${GREEN}telepítve${NC}"
   else
     echo -e "${DIM}Állapot:${NC} ${YELLOW}nincs telepítve${NC}"
   fi
 
-  ask_yn "Induljon $name telepítése/konfigurálása?" || {
-    warn "$name kihagyva"
-    COMPONENT_STATUS["$name"]="skipped"
-    echo
-    return
-  }
-
-  ( eval "$install" ) & pid=$!
-  spinner "$pid" "$name fut..."
-  if wait "$pid"; then
-    ok "$name kész"
-    COMPONENT_STATUS["$name"]="ok"
+  local action=""
+  if [[ "$is_installed" == "yes" ]]; then
+    action="$(ask_action_installed "Mit csináljak $name komponenssel?")"
   else
-    warn "$name hiba"
-    COMPONENT_STATUS["$name"]="error"
+    action="$(ask_action_not_installed "Mit csináljak $name komponenssel?")"
   fi
-  echo
+
+  case "$action" in
+    skip)
+      warn "$name kihagyva"
+      COMPONENT_STATUS["$name"]="skipped"
+      echo
+      return
+      ;;
+    install)
+      ( eval "$install" ) & pid=$!
+      spinner "$pid" "$name fut..."
+      if wait "$pid"; then
+        ok "$name kész"
+        COMPONENT_STATUS["$name"]="ok"
+      else
+        warn "$name hiba"
+        COMPONENT_STATUS["$name"]="error"
+      fi
+      echo
+      return
+      ;;
+    remove)
+      ( eval "$remove" ) & pid=$!
+      spinner "$pid" "$name törlése..."
+      if wait "$pid"; then
+        ok "$name törölve"
+        COMPONENT_STATUS["$name"]="removed"
+      else
+        warn "$name törlés hiba"
+        COMPONENT_STATUS["$name"]="error"
+      fi
+      echo
+      return
+      ;;
+  esac
 }
 
-run_component "Apache2"   "pkg_installed apache2"        "install_apache"
-run_component "SSH"       "pkg_installed openssh-server" "install_ssh"
-run_component "Mosquitto" "pkg_installed mosquitto"      "install_mosquitto"
-run_component "Node-RED"  "nr_installed"                 "install_node_red"
-run_component "MariaDB"   "pkg_installed mariadb-server" "install_mariadb"
-run_component "PHP"       "(pkg_installed php || pkg_installed libapache2-mod-php)" "install_php"
-run_component "UFW"       "pkg_installed ufw"            "install_ufw"
+run_component "Apache2"   "pkg_installed apache2"        "install_apache"   "remove_apache"
+run_component "SSH"       "pkg_installed openssh-server" "install_ssh"      "remove_ssh"
+run_component "Mosquitto" "pkg_installed mosquitto"      "install_mosquitto" "remove_mosquitto"
+run_component "Node-RED"  "nr_installed"                 "install_node_red" "remove_node_red"
+run_component "MariaDB"   "pkg_installed mariadb-server" "install_mariadb"  "remove_mariadb"
+run_component "PHP"       "(pkg_installed php || pkg_installed libapache2-mod-php)" "install_php" "remove_php"
+run_component "UFW"       "pkg_installed ufw"            "install_ufw"      "remove_ufw"
 
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
 
-# VÉGE: panel fix, art mozog, végtelen (Q/Ctrl+C-ig)
 befejezodott_spin_color_forever
