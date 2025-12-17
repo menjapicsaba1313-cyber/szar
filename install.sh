@@ -19,7 +19,7 @@ MUSIC_VOLUME=80
 # SZÍNEK
 ############################################
 RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
-PURPLE="\e[35m"; CYAN="\e[36m"; BOLD="\e[1m"; NC="\e[0m"
+PURPLE="\e[35m"; CYAN="\e[36m"; BOLD="\e[1m"; DIM="\e[2m"; NC="\e[0m"
 
 ############################################
 # ROOT CHECK
@@ -36,12 +36,24 @@ fi
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
 log(){ echo "$(date '+%F %T') | $1" | tee -a "$LOGFILE" >/dev/null; }
-ok(){ echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
+ok(){   echo -e "${GREEN}✔ $1${NC}"; log "OK: $1"; }
 warn(){ echo -e "${YELLOW}⚠ $1${NC}"; log "WARN: $1"; }
+err(){  echo -e "${RED}✖ $1${NC}"; log "ERR: $1"; }
 
 ############################################
 # UI SEGÉDEK
 ############################################
+hr(){ echo -e "${DIM}────────────────────────────────────────────────────────────${NC}"; }
+title(){
+  clear
+  echo -e "${PURPLE}${BOLD}╔════════════════════════════════════════════════════════════╗${NC}"
+  printf  "${PURPLE}${BOLD}║%-60s║${NC}\n" "  SHOW-OFF SERVER INSTALLER"
+  echo -e "${PURPLE}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
+  echo -e "${BLUE}Hotkeys:${NC} T=toggle zene  M=stop zene  H=súgó"
+  echo -e "${DIM}Log:${NC} $LOGFILE"
+  echo
+}
+
 spinner() {
   local pid="$1" text="$2" spin='|/-\' i=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -57,6 +69,10 @@ ask_yn(){
     read -rp "$1 (i/n): " a
     case "$a" in i|I) return 0;; n|N) return 1;; *) echo "i vagy n";; esac
   done
+}
+
+pause_enter(){
+  read -rp "Nyomj Entert a folytatáshoz..." _ || true
 }
 
 ############################################
@@ -108,7 +124,7 @@ music_stop(){
   fi
 }
 
-music_toggle(){ if kill -0 "$MUSIC_PID" 2>/dev/null; then music_stop; else music_start; fi; }
+music_toggle(){ if kill -0 "${MUSIC_PID:-}" 2>/dev/null; then music_stop; else music_start; fi; }
 
 hotkeys(){
   while true; do
@@ -116,13 +132,11 @@ hotkeys(){
       case "$k" in
         [Tt]) music_toggle ;;
         [Mm]) music_stop ;;
-        [Hh]) echo -e "${BLUE}T=toggle  M=stop  Log=$LOGFILE${NC}" ;;
+        [Hh]) echo -e "${BLUE}T=toggle  M=stop  Q=kilépés a BEFEJEZODOTT képernyőről  Log=$LOGFILE${NC}" ;;
       esac
     fi
   done
 }
-
-trap music_stop EXIT
 
 ############################################
 # TELEPÍTŐK
@@ -133,9 +147,11 @@ install_mosquitto(){ apt_install mosquitto mosquitto-clients && svc_on mosquitto
 install_mariadb(){ apt_install mariadb-server && svc_on mariadb; }
 
 install_php(){
+  # NEM telepítünk dependency-t kérdés nélkül
   if ! pkg_installed apache2; then
-    warn "PHP-hoz kell Apache2 – telepítem."
-    install_apache
+    warn "PHP-hoz kell Apache2."
+    ask_yn "Apache2 nincs telepítve. Telepítsem most az Apache2-t?" || { warn "Apache2 nélkül PHP telepítés kihagyva."; return 1; }
+    install_apache || return 1
   fi
   apt_install php libapache2-mod-php php-mysql
   systemctl restart apache2 >/dev/null 2>&1 || true
@@ -166,10 +182,10 @@ install_ufw(){
 }
 
 ############################################
-# BEFEJEZODOTT – SZÍNVÁLTÓ + “FORGÓ” (KÖRBE MOZGÓ)
+# BEFEJEZODOTT – VÉGTELEN “FORGÓ” + KILÉPÉS
 ############################################
-befejezodott_spin_color() {
- local -a art=(
+befejezodott_spin_color_forever() {
+  local -a art=(
 "█████   ██████  ██████  ██████    ████  ██████  ██████   ████   █████    ████   ██████  ██████"
 "██  ██  ██      ██      ██          ██  ██          ██  ██  ██  ██  ██  ██  ██    ██      ██"
 "██  ██  ██      ██      ██          ██  ██         ██   ██  ██  ██  ██  ██  ██    ██      ██"
@@ -177,20 +193,19 @@ befejezodott_spin_color() {
 "██  ██  ██      ██      ██      ██  ██  ██       ██     ██  ██  ██  ██  ██  ██    ██      ██"
 "██  ██  ██      ██      ██      ██  ██  ██      ██      ██  ██  ██  ██  ██  ██    ██      ██"
 "█████   ██████  ██      ██████   ████   ██████  ██████   ████   █████    ████     ██      ██"
-)
+  )
 
   local -a colors=("\e[35m" "\e[34m" "\e[36m" "\e[32m" "\e[33m" "\e[31m")
   local reset="\e[0m"
 
-  # körpálya eltolások (dx dy) – ettől “forog”
   local positions=(
     "0 -3" "3 -2" "6 0" "3 2"
     "0 3" "-3 2" "-6 0" "-3 -2"
   )
 
-  # Ha terminál nem alkalmas
   if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
     echo "BEFEJEZODOTT"
+    echo "(Stahl Dávid Jenő)"
     return 0
   fi
 
@@ -210,63 +225,105 @@ befejezodott_spin_color() {
 
   tput civis 2>/dev/null || true
 
-  # 2 kör, közben színváltás
+  # Kilépésnél mindig visszaállítjuk a kurzort
+  cleanup_finish(){
+    tput cnorm 2>/dev/null || true
+    printf "\033[0m\033[2J\033[H"
+  }
+  trap cleanup_finish INT TERM
+
   local frame=0
-  for ((loop=0; loop<2; loop++)); do
-    for pos in "${positions[@]}"; do
-      printf "\033[2J\033[H"
-      read -r dx dy <<< "$pos"
+  local pos_idx=0
 
-      local y=$(( base_y + dy ))
-      local x=$(( base_x + dx ))
-      (( y < 0 )) && y=0
-      (( x < 0 )) && x=0
+  while true; do
+    # Q = kilépés
+    if read -rsn1 -t 0.05 k; then
+      case "$k" in
+        [Qq])
+          cleanup_finish
+          return 0
+          ;;
+      esac
+    fi
 
-      local c="${colors[$((frame % ${#colors[@]}))]}"
-      for i in "${!art[@]}"; do
-        tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
-        printf "%b%s%b" "$c" "${art[$i]}" "$reset"
-      done
+    local c="${colors[$((frame % ${#colors[@]}))]}"
 
-      frame=$((frame+1))
-      sleep 0.12
+    local dx dy
+    read -r dx dy <<< "${positions[$pos_idx]}"
+    pos_idx=$(( (pos_idx + 1) % ${#positions[@]} ))
+
+    printf "\033[2J\033[H"
+
+    local y=$(( base_y + dy ))
+    local x=$(( base_x + dx ))
+    (( y < 0 )) && y=0
+    (( x < 0 )) && x=0
+
+    for i in "${!art[@]}"; do
+      tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
+      printf "%b%s%b" "$c" "${art[$i]}" "$reset"
     done
-  done
 
-  tput cnorm 2>/dev/null || true
-  printf "\033[2J\033[H"
+    # alsó sor: név + kilépés info (nem törlődik el “végleg”, mert újrarajzol)
+    tput cup $((rows-2)) 0 2>/dev/null || true
+    printf "%b(%s)%b  %b[Q]=kilépés  Ctrl+C=kilépés%b" "${PURPLE}" "Stahl Dávid Jenő" "${reset}" "${DIM}" "${reset}"
+
+    frame=$((frame+1))
+    sleep 0.10
+  done
 }
 
 ############################################
-# BANNER
+# TRAP
 ############################################
-clear
-echo -e "${PURPLE}${BOLD}=========================================${NC}"
-echo -e "${PURPLE}${BOLD}  SHOW-OFF SERVER INSTALLER              ${NC}"
-echo -e "${PURPLE}${BOLD}=========================================${NC}"
-echo -e "${BLUE}Hotkeys:${NC} T=toggle  M=stop  H=súgó"
-echo
+trap 'music_stop 2>/dev/null || true' EXIT
 
 ############################################
 # FUTTATÁS
 ############################################
+title
 hotkeys & HOTKEY_PID=$!
-music_start
 
-apt_update
+# Zene: ne induljon el automatikusan, csak kérdésre
+if ask_yn "Indítsak háttérzenét?"; then
+  music_start
+else
+  warn "Zene kihagyva."
+fi
+
+hr
+echo -e "${BOLD}Előkészítés${NC}"
+# APT UPDATE se fusson automatikusan
+if ask_yn "Futtassak apt-get update-et? (ajánlott)"; then
+  ( apt_update ) & pid=$!
+  spinner "$pid" "apt-get update fut..."
+  wait "$pid" && ok "apt-get update kész" || warn "apt-get update hiba"
+else
+  warn "apt-get update kihagyva."
+fi
+echo
+hr
 
 run_component(){
   local name="$1" check="$2" install="$3"
-  echo -e "${BLUE}==> $name${NC}"
+
+  echo -e "${BLUE}${BOLD}==> $name${NC}"
   if eval "$check"; then
-    warn "$name már telepítve."
-    ask_yn "Újratelepíted?" || { ok "$name kihagyva"; echo; return; }
+    echo -e "${DIM}Állapot:${NC} ${GREEN}telepítve${NC}"
   else
-    ask_yn "$name nincs telepítve. Telepítsem?" || { warn "$name kihagyva"; echo; return; }
+    echo -e "${DIM}Állapot:${NC} ${YELLOW}nincs telepítve${NC}"
   fi
+
+  # Itt a lényeg: MINDIG kérdezünk, nem csak újratelepítésnél
+  ask_yn "Induljon $name telepítése/konfigurálása?" || { warn "$name kihagyva"; echo; return; }
+
   ( eval "$install" ) & pid=$!
-  spinner "$pid" "$name telepítése..."
-  wait "$pid" && ok "$name kész" || warn "$name hiba"
+  spinner "$pid" "$name fut..."
+  if wait "$pid"; then
+    ok "$name kész"
+  else
+    warn "$name hiba"
+  fi
   echo
 }
 
@@ -281,8 +338,5 @@ run_component "UFW"       "pkg_installed ufw"            "install_ufw"
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
 
-############################################
-# SHOW-OFF VÉGE (CSAK BEFEJEZODOTT)
-############################################
-befejezodott_spin_color
-echo -e "${PURPLE}(Stahl Dávid Jenő)${NC}"
+# VÉGE: végtelen animáció, amíg le nem állítod
+befejezodott_spin_color_forever
