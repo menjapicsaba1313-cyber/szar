@@ -330,25 +330,40 @@ draw_status_panel(){
     st="${COMPONENT_STATUS[$comp]:-skipped}"
     present="${COMPONENT_PRESENT[$comp]:-unknown}"
 
-    # Skip esetén kiírjuk, hogy telepítve volt-e
     note=""
     if [[ "$st" == "skipped" ]]; then
-      if [[ "$present" == "yes" ]]; then note=" (telepítve)"; fi
-      if [[ "$present" == "no"  ]]; then note=" (nincs telepítve)"; fi
+      if [[ "$present" == "yes" ]]; then
+        note=" (telepítve)"
+      elif [[ "$present" == "no" ]]; then
+        note=" (nem telepítve)"
+      else
+        note=" (ismeretlen)"
+      fi
     fi
 
     case "$st" in
-      ok)      printf " %b✔%b %s – kész\n"           "$GREEN" "$NC" "$comp" ;;
-      skipped) printf " %b•%b %s – kihagyva%s\n"     "$YELLOW" "$NC" "$comp" "$note" ;;
-      removed) printf " %b🗑%b %s – törölve\n"         "$CYAN" "$NC" "$comp" ;;
-      error)   printf " %b✖%b %s – hiba\n"           "$RED" "$NC" "$comp" ;;
-      *)       printf " %b•%b %s – kihagyva\n"       "$YELLOW" "$NC" "$comp" ;;
+      ok)
+        printf " %b✔%b %s – telepítve\n" "$GREEN" "$NC" "$comp"
+        ;;
+      skipped)
+        printf " %b•%b %s – kihagyva%s\n" "$YELLOW" "$NC" "$comp" "$note"
+        ;;
+      removed)
+        printf " %b🗑%b %s – törölve\n" "$CYAN" "$NC" "$comp"
+        ;;
+      error)
+        printf " %b✖%b %s – hiba\n" "$RED" "$NC" "$comp"
+        ;;
+      *)
+        printf " %b•%b %s – kihagyva\n" "$YELLOW" "$NC" "$comp"
+        ;;
     esac
   done
 
   printf "%bLog:%b %s\n" "$DIM" "$NC" "$LOGFILE"
   printf "%bMusic log:%b %s\n" "$DIM" "$NC" "$MUSIC_LOG"
 }
+
 
 ############################################
 # BEFEJEZODOTT – mozog, panel fix, végtelen
