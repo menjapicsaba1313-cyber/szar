@@ -16,6 +16,13 @@ YOUTUBE_URL="https://www.youtube.com/watch?v=0Wi8Fv0AJA4&list=RD0Wi8Fv0AJA4&star
 MUSIC_VOLUME=80
 
 ############################################
+# ÁLLAPOTOK (összegzéshez)
+############################################
+declare -A COMPONENT_STATUS
+# értékek: ok | skipped | error
+# ha egy komponenshez nem nyúltunk: skipped (alap)
+
+############################################
 # SZÍNEK
 ############################################
 RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
@@ -160,14 +167,25 @@ install_php(){
 nr_installed(){
   command -v node-red >/dev/null 2>&1 || systemctl list-unit-files | grep -q '^nodered\.service'
 }
+
+# JAVÍTVA: ha már telepítve van, ne legyen internet-check miatti "hiba"
 install_node_red(){
+  if nr_installed; then
+    ok "Node-RED már telepítve van – nincs teendő."
+    systemctl enable --now nodered.service >/dev/null 2>&1 || true
+    return 0
+  fi
+
   apt_install curl ca-certificates
+
   if ! have_internet; then
-    warn "Nincs internet – Node-RED kihagyva."
+    warn "Nincs internet – Node-RED nem telepíthető."
     return 1
   fi
+
   curl -fsSL https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb |
     bash -s -- --confirm-root
+
   systemctl daemon-reload
   svc_on nodered.service
 }
@@ -182,7 +200,30 @@ install_ufw(){
 }
 
 ############################################
-# BEFEJEZODOTT – VÉGTELEN “FORGÓ” + KILÉPÉS
+# STÁTUSZ PANEL (BEFEJEZODOTT képernyőre)
+############################################
+draw_status_panel(){
+  local row_start="$1"
+  tput cup "$row_start" 0 2>/dev/null || return
+
+  echo -e "${BOLD}Állapot összegzés:${NC}"
+  local comp st
+
+  for comp in "Apache2" "SSH" "Mosquitto" "Node-RED" "MariaDB" "PHP" "UFW"; do
+    st="${COMPONENT_STATUS[$comp]:-skipped}"
+    case "$st" in
+      ok)      echo -e " ${GREEN}✔${NC} $comp – kész" ;;
+      skipped) echo -e " ${YELLOW}•${NC} $comp – kihagyva" ;;
+      error)   echo -e " ${RED}✖${NC} $comp – hiba" ;;
+      *)       echo -e " ${YELLOW}•${NC} $comp – kihagyva" ;;
+    esac
+  done
+
+  echo -e "${DIM}Log:${NC} $LOGFILE"
+}
+
+############################################
+# BEFEJEZODOTT – VÉGTELEN “FORGÓ” + STÁTUSZOK + KILÉPÉS
 ############################################
 befejezodott_spin_color_forever() {
   local -a art=(
@@ -205,6 +246,10 @@ befejezodott_spin_color_forever() {
 
   if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
     echo "BEFEJEZODOTT"
+    echo "Állapot összegzés:"
+    for comp in "Apache2" "SSH" "Mosquitto" "Node-RED" "MariaDB" "PHP" "UFW"; do
+      echo " - $comp: ${COMPONENT_STATUS[$comp]:-skipped}"
+    done
     echo "(Stahl Dávid Jenő)"
     return 0
   fi
@@ -225,7 +270,6 @@ befejezodott_spin_color_forever() {
 
   tput civis 2>/dev/null || true
 
-  # Kilépésnél mindig visszaállítjuk a kurzort
   cleanup_finish(){
     tput cnorm 2>/dev/null || true
     printf "\033[0m\033[2J\033[H"
@@ -264,7 +308,10 @@ befejezodott_spin_color_forever() {
       printf "%b%s%b" "$c" "${art[$i]}" "$reset"
     done
 
-    # alsó sor: név + kilépés info (nem törlődik el “végleg”, mert újrarajzol)
+    # Státusz panel a forgó szöveg alatt (fixen ott van, mert minden frame-ben újrarajzoljuk)
+    draw_status_panel $((y + ${#art[@]} + 2))
+
+    # alsó sor: név + kilépés info
     tput cup $((rows-2)) 0 2>/dev/null || true
     printf "%b(%s)%b  %b[Q]=kilépés  Ctrl+C=kilépés%b" "${PURPLE}" "Stahl Dávid Jenő" "${reset}" "${DIM}" "${reset}"
 
@@ -314,15 +361,22 @@ run_component(){
     echo -e "${DIM}Állapot:${NC} ${YELLOW}nincs telepítve${NC}"
   fi
 
-  # Itt a lényeg: MINDIG kérdezünk, nem csak újratelepítésnél
-  ask_yn "Induljon $name telepítése/konfigurálása?" || { warn "$name kihagyva"; echo; return; }
+  # MINDIG kérdezünk
+  ask_yn "Induljon $name telepítése/konfigurálása?" || {
+    warn "$name kihagyva"
+    COMPONENT_STATUS["$name"]="skipped"
+    echo
+    return
+  }
 
   ( eval "$install" ) & pid=$!
   spinner "$pid" "$name fut..."
   if wait "$pid"; then
     ok "$name kész"
+    COMPONENT_STATUS["$name"]="ok"
   else
     warn "$name hiba"
+    COMPONENT_STATUS["$name"]="error"
   fi
   echo
 }
@@ -338,5 +392,5 @@ run_component "UFW"       "pkg_installed ufw"            "install_ufw"
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
 
-# VÉGE: végtelen animáció, amíg le nem állítod
+# VÉGE: végtelen animáció + státuszok, amíg le nem állítod
 befejezodott_spin_color_forever
