@@ -20,7 +20,6 @@ MUSIC_VOLUME=80
 ############################################
 declare -A COMPONENT_STATUS
 # értékek: ok | skipped | error
-# ha egy komponenshez nem nyúltunk: skipped (alap)
 
 ############################################
 # SZÍNEK
@@ -76,10 +75,6 @@ ask_yn(){
     read -rp "$1 (i/n): " a
     case "$a" in i|I) return 0;; n|N) return 1;; *) echo "i vagy n";; esac
   done
-}
-
-pause_enter(){
-  read -rp "Nyomj Entert a folytatáshoz..." _ || true
 }
 
 ############################################
@@ -154,7 +149,6 @@ install_mosquitto(){ apt_install mosquitto mosquitto-clients && svc_on mosquitto
 install_mariadb(){ apt_install mariadb-server && svc_on mariadb; }
 
 install_php(){
-  # NEM telepítünk dependency-t kérdés nélkül
   if ! pkg_installed apache2; then
     warn "PHP-hoz kell Apache2."
     ask_yn "Apache2 nincs telepítve. Telepítsem most az Apache2-t?" || { warn "Apache2 nélkül PHP telepítés kihagyva."; return 1; }
@@ -200,30 +194,39 @@ install_ufw(){
 }
 
 ############################################
-# STÁTUSZ PANEL (BEFEJEZODOTT képernyőre)
+# FIX STÁTUSZ PANEL (nem mozog)
 ############################################
+STATUS_ROW=1
+STATUS_PANEL_HEIGHT=11  # panel "rezervált" magasság (hogy a mozgó art ne érjen bele)
+
 draw_status_panel(){
-  local row_start="$1"
-  tput cup "$row_start" 0 2>/dev/null || return
+  local row="$1"
+  local cols="$2"
 
-  echo -e "${BOLD}Állapot összegzés:${NC}"
+  # Panel területének törlése (csak a panel sorai, nem az egész képernyő)
+  for ((i=0; i<STATUS_PANEL_HEIGHT; i++)); do
+    tput cup $((row+i)) 0 2>/dev/null || return
+    printf "%*s" "$cols" ""
+  done
+
+  tput cup "$row" 0 2>/dev/null || return
+  printf "%bÁllapot összegzés:%b\n" "$BOLD" "$NC"
+
   local comp st
-
   for comp in "Apache2" "SSH" "Mosquitto" "Node-RED" "MariaDB" "PHP" "UFW"; do
     st="${COMPONENT_STATUS[$comp]:-skipped}"
     case "$st" in
-      ok)      echo -e " ${GREEN}✔${NC} $comp – kész" ;;
-      skipped) echo -e " ${YELLOW}•${NC} $comp – kihagyva" ;;
-      error)   echo -e " ${RED}✖${NC} $comp – hiba" ;;
-      *)       echo -e " ${YELLOW}•${NC} $comp – kihagyva" ;;
+      ok)      printf " %b✔%b %s – kész\n"      "$GREEN" "$NC" "$comp" ;;
+      skipped) printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
+      error)   printf " %b✖%b %s – hiba\n"       "$RED" "$NC" "$comp" ;;
+      *)       printf " %b•%b %s – kihagyva\n"   "$YELLOW" "$NC" "$comp" ;;
     esac
   done
-
-  echo -e "${DIM}Log:${NC} $LOGFILE"
+  printf "%bLog:%b %s\n" "$DIM" "$NC" "$LOGFILE"
 }
 
 ############################################
-# BEFEJEZODOTT – VÉGTELEN “FORGÓ” + STÁTUSZOK + KILÉPÉS
+# BEFEJEZODOTT – mozog, panel fix, végtelen
 ############################################
 befejezodott_spin_color_forever() {
   local -a art=(
@@ -262,11 +265,17 @@ befejezodott_spin_color_forever() {
   for line in "${art[@]}"; do
     (( ${#line} > maxw )) && maxw=${#line}
   done
+  local arth=${#art[@]}
+  local artw=$maxw
 
-  local base_y=$(( (rows - ${#art[@]}) / 2 ))
-  local base_x=$(( (cols - maxw) / 2 ))
-  (( base_y < 0 )) && base_y=0
+  # Alappozíció (közép), de a panel miatt minimum lejjebb kényszerítjük
+  local base_y=$(( (rows - arth) / 2 ))
+  local base_x=$(( (cols - artw) / 2 ))
   (( base_x < 0 )) && base_x=0
+
+  # Panel alatt kezdődjön a mozgó rész
+  local min_y=$((STATUS_ROW + STATUS_PANEL_HEIGHT + 1))
+  (( base_y < min_y )) && base_y=$min_y
 
   tput civis 2>/dev/null || true
 
@@ -276,8 +285,16 @@ befejezodott_spin_color_forever() {
   }
   trap cleanup_finish INT TERM
 
+  # Egyszeri full clear induláskor
+  printf "\033[2J\033[H"
+
+  # Fix panel kirajzolása
+  draw_status_panel "$STATUS_ROW" "$cols"
+
   local frame=0
   local pos_idx=0
+  local prev_y=-1
+  local prev_x=-1
 
   while true; do
     # Q = kilépés
@@ -290,31 +307,47 @@ befejezodott_spin_color_forever() {
       esac
     fi
 
-    local c="${colors[$((frame % ${#colors[@]}))]}"
+    # Panel fixen marad (frissítjük, hogy mindig látszódjon)
+    draw_status_panel "$STATUS_ROW" "$cols"
 
+    # következő pozíció
     local dx dy
     read -r dx dy <<< "${positions[$pos_idx]}"
     pos_idx=$(( (pos_idx + 1) % ${#positions[@]} ))
 
-    printf "\033[2J\033[H"
-
     local y=$(( base_y + dy ))
     local x=$(( base_x + dx ))
-    (( y < 0 )) && y=0
+
+    # clamp: ne érjen a panelbe, és ne lógjon ki
+    (( y < min_y )) && y=$min_y
+    (( x < 0 )) && x=0
+    (( y + arth >= rows-2 )) && y=$(( rows-2-arth ))
+    (( x + artw >= cols )) && x=$(( cols-artw ))
+    (( y < min_y )) && y=$min_y
     (( x < 0 )) && x=0
 
+    # előző art terület törlése (csak a mozgó art téglalapja)
+    if (( prev_y >= 0 && prev_x >= 0 )); then
+      for ((i=0; i<arth; i++)); do
+        tput cup $((prev_y+i)) "$prev_x" 2>/dev/null || printf "\033[%d;%dH" "$((prev_y+i+1))" "$((prev_x+1))"
+        printf "%*s" "$artw" ""
+      done
+    fi
+
+    # új art kirajzolása
+    local c="${colors[$((frame % ${#colors[@]}))]}"
     for i in "${!art[@]}"; do
       tput cup $((y+i)) "$x" 2>/dev/null || printf "\033[%d;%dH" "$((y+i+1))" "$((x+1))"
       printf "%b%s%b" "$c" "${art[$i]}" "$reset"
     done
 
-    # Státusz panel a forgó szöveg alatt (fixen ott van, mert minden frame-ben újrarajzoljuk)
-    draw_status_panel $((y + ${#art[@]} + 2))
-
-    # alsó sor: név + kilépés info
+    # alsó sor: név + kilépés info (fixen alul)
     tput cup $((rows-2)) 0 2>/dev/null || true
     printf "%b(%s)%b  %b[Q]=kilépés  Ctrl+C=kilépés%b" "${PURPLE}" "Stahl Dávid Jenő" "${reset}" "${DIM}" "${reset}"
+    printf "\033[K"
 
+    prev_y=$y
+    prev_x=$x
     frame=$((frame+1))
     sleep 0.10
   done
@@ -361,7 +394,6 @@ run_component(){
     echo -e "${DIM}Állapot:${NC} ${YELLOW}nincs telepítve${NC}"
   fi
 
-  # MINDIG kérdezünk
   ask_yn "Induljon $name telepítése/konfigurálása?" || {
     warn "$name kihagyva"
     COMPONENT_STATUS["$name"]="skipped"
@@ -392,5 +424,5 @@ run_component "UFW"       "pkg_installed ufw"            "install_ufw"
 kill "$HOTKEY_PID" 2>/dev/null || true
 music_stop
 
-# VÉGE: végtelen animáció + státuszok, amíg le nem állítod
+# VÉGE: panel fix, art mozog, végtelen (Q/Ctrl+C-ig)
 befejezodott_spin_color_forever
