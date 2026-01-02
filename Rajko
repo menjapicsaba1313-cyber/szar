@@ -124,38 +124,37 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 ############################################
-# TTY / INPUT FIX (CTRL+C bug megszüntetése)
-# - minden prompt biztosan megjelenik
-# - minden read biztosan továbbmegy, nem kell CTRL+C
+# INPUT FIX (CTRL+C bug megszüntetése)
+# - promptok stderr-re mennek (nem nyeli el a $(...) )
+# - ha nincs TTY (pl. pipe/cron), automatikusan defaultol
 ############################################
-TTY_IN="/dev/tty"
-TTY_OUT="/dev/tty"
-init_tty() {
-  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
-    TTY_IN="/dev/stdin"
-    TTY_OUT="/dev/stderr"
-  fi
-  # fix FD-k: 3 = input, 4 = output
-  exec 3<"$TTY_IN"
-  exec 4>"$TTY_OUT"
+has_tty() {
+  [[ -t 0 ]] || [[ -t 1 ]] || [[ -t 2 ]]
 }
 
-############################################
-# IGEN/NEM / 3-ÁLLÁSÚ (I/R/S)
-############################################
+read_line_or_default() { # $1=default -> echo answer
+  local def="$1" ans=""
+  if [[ -t 0 ]]; then
+    IFS= read -r ans || ans=""
+    ans="${ans:-$def}"
+    echo "$ans"
+    return 0
+  fi
+  # nincs interaktív stdin -> default (nem blokkolunk)
+  echo "$def"
+}
+
 ask_yn() { # ask_yn "Kérdés?" default(Y/N)
   local q="$1" def="${2:-Y}" ans=""
   local hint="Y/n"
   [[ "$def" == "N" ]] && hint="y/N"
-
   while true; do
-    printf "%b%s%b (%s): " "$CYAN" "$q" "$NC" "$hint" >&4
-    IFS= read -r ans <&3 || ans=""
-    ans="${ans:-$def}"
+    printf "%b%s%b (%s): " "$CYAN" "$q" "$NC" "$hint" >&2
+    ans="$(read_line_or_default "$def")"
     case "$ans" in
       Y|y) return 0 ;;
       N|n) return 1 ;;
-      *) printf "Kérlek Y vagy N.\n" >&4 ;;
+      *) printf "Kérlek Y vagy N.\n" >&2 ;;
     esac
   done
 }
@@ -165,16 +164,14 @@ ask_action() { # ask_action "Apache" default(I/R/S) -> stdout: install/remove/sk
   local def="${2:-I}"
   local ans=""
   local hint="I=Telepít / R=Töröl / S=Kihagy"
-
   while true; do
-    printf "%b%s:%b %s (alap: %s): " "$CYAN" "$name" "$NC" "$hint" "$def" >&4
-    IFS= read -r ans <&3 || ans=""
-    ans="${ans:-$def}"
+    printf "%b%s:%b %s (alap: %s): " "$CYAN" "$name" "$NC" "$hint" "$def" >&2
+    ans="$(read_line_or_default "$def")"
     case "$ans" in
       I|i) echo "install"; return 0 ;;
       R|r) echo "remove";  return 0 ;;
       S|s) echo "skip";    return 0 ;;
-      *)   printf "Kérlek I / R / S.\n" >&4 ;;
+      *)   printf "Kérlek I / R / S.\n" >&2 ;;
     esac
   done
 }
@@ -211,14 +208,26 @@ apt_purge() {
 }
 
 ############################################
-# ZENE (YouTube stream) – START/STOP (JAVÍTOTT)
+# ZENE (YouTube stream) – START/STOP (JAVÍTOTT + yt-dlp frissítés fallback)
 ############################################
+get_stream_url() {
+  # 1) sima
+  timeout 25 yt-dlp --no-playlist -f bestaudio --get-url "$YOUTUBE_URL" 2>>"$LOGFILE" | head -n 1
+}
+
+get_stream_url_android() {
+  # 2) android kliens (gyakran megoldja az extract hibát)
+  timeout 25 yt-dlp --no-playlist -f bestaudio --get-url \
+    --extractor-args "youtube:player_client=android" \
+    "$YOUTUBE_URL" 2>>"$LOGFILE" | head -n 1
+}
+
 start_music() {
   $ENABLE_MUSIC || return 0
 
   section "Zene"
 
-  # biztosítsuk a kellékeket (nem változtat a telepítéseiden, csak a zene miatt kell)
+  # kellékek
   if ! command -v yt-dlp >/dev/null 2>&1; then
     info "Zene: yt-dlp telepítése..."
     apt_install yt-dlp || { warn "Zene: yt-dlp telepítése nem sikerült."; return 0; }
@@ -228,15 +237,33 @@ start_music() {
     apt_install mpv || { warn "Zene: mpv telepítése nem sikerült."; return 0; }
   fi
 
-  # stream URL kinyerése
+  # stream URL kinyerése – több lépéses fallback
   local stream_url=""
-  stream_url="$(yt-dlp -f bestaudio -g "$YOUTUBE_URL" 2>>"$LOGFILE" || true)"
+  stream_url="$(get_stream_url || true)"
+  if [[ -z "$stream_url" ]]; then
+    stream_url="$(get_stream_url_android || true)"
+  fi
+
+  # ha még mindig üres, frissítjük yt-dlp-t pip-pel és újrapróbáljuk
+  if [[ -z "$stream_url" ]]; then
+    warn "Zene: yt-dlp nem tudta kinyerni a stream URL-t. Megpróbálom frissíteni yt-dlp-t..."
+    apt_install python3-pip python3-venv >/dev/null 2>&1 || true
+    # pip3 upgrade (rootként)
+    timeout 120 pip3 install -U yt-dlp >>"$LOGFILE" 2>&1 || true
+
+    # újra próbák
+    stream_url="$(get_stream_url || true)"
+    if [[ -z "$stream_url" ]]; then
+      stream_url="$(get_stream_url_android || true)"
+    fi
+  fi
+
   if [[ -z "$stream_url" ]]; then
     warn "Zene: nem sikerült kinyerni a stream URL-t a YouTube linkből."
     return 0
   fi
 
-  # a lejátszót indítjuk háttérben (nem a run() wrapper-t)
+  # lejátszás indítása háttérben
   mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" >>"$LOGFILE" 2>&1 &
   MUSIC_PID="$!"
 
@@ -743,9 +770,7 @@ configure_actions() {
 # FŐ FUTÁS
 ############################################
 main() {
-  init_tty
   banner
-
   configure_actions
 
   # Zene indítása (ha kérted)
