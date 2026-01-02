@@ -10,7 +10,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ############################################
 LOGFILE="/var/log/showoff_installer.log"
 
-# ZENE (YouTube)
+# ZENE (YouTube) – a kért linkkel
 YOUTUBE_URL="https://www.youtube.com/watch?v=jj0ChLVTpaA&list=RDjj0ChLVTpaA&start_radio=1"
 MUSIC_VOLUME=70
 ENABLE_MUSIC=false
@@ -124,59 +124,21 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 ############################################
-# ZENE (YouTube stream) – START/STOP
+# TTY / INPUT FIX (CTRL+C bug megszüntetése)
+# - minden prompt biztosan megjelenik
+# - minden read biztosan továbbmegy, nem kell CTRL+C
 ############################################
-start_music() {
-  $ENABLE_MUSIC || return 0
-
-  section "Zene"
-  # szükséges csomagok telepítése (csak ha kell)
-  if ! command -v yt-dlp >/dev/null 2>&1; then
-    info "Zene: yt-dlp telepítése..."
-    apt_install yt-dlp || { warn "Zene: yt-dlp telepítése nem sikerült."; return 0; }
+TTY_IN="/dev/tty"
+TTY_OUT="/dev/tty"
+init_tty() {
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    TTY_IN="/dev/stdin"
+    TTY_OUT="/dev/stderr"
   fi
-  if ! command -v mpv >/dev/null 2>&1; then
-    info "Zene: mpv telepítése..."
-    apt_install mpv || { warn "Zene: mpv telepítése nem sikerült."; return 0; }
-  fi
-
-  # stream URL kinyerése
-  local stream_url=""
-  stream_url="$(yt-dlp -f bestaudio -g "$YOUTUBE_URL" 2>>"$LOGFILE" || true)"
-  if [[ -z "$stream_url" ]]; then
-    warn "Zene: nem sikerült kinyerni a stream URL-t a YouTube linkből."
-    return 0
-  fi
-
-  # lejátszás indítása (a lejátszót indítjuk háttérben, nem a run() wrapper-t)
-  mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" >>"$LOGFILE" 2>&1 &
-  MUSIC_PID="$!"
-
-  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
-    ok "Megy a zene."
-  else
-    warn "Zene: nem indult el a lejátszás."
-    MUSIC_PID=""
-  fi
+  # fix FD-k: 3 = input, 4 = output
+  exec 3<"$TTY_IN"
+  exec 4>"$TTY_OUT"
 }
-
-stop_music() {
-  if [[ -n "${MUSIC_PID:-}" ]]; then
-    if kill -0 "$MUSIC_PID" 2>/dev/null; then
-      kill "$MUSIC_PID" >/dev/null 2>&1 || true
-      sleep 0.3 || true
-      kill -9 "$MUSIC_PID" >/dev/null 2>&1 || true
-    fi
-    MUSIC_PID=""
-    ok "Zene leállítva."
-  fi
-}
-
-# Biztos leállítás megszakításkor is
-cleanup() {
-  stop_music
-}
-trap cleanup EXIT INT TERM
 
 ############################################
 # IGEN/NEM / 3-ÁLLÁSÚ (I/R/S)
@@ -185,14 +147,15 @@ ask_yn() { # ask_yn "Kérdés?" default(Y/N)
   local q="$1" def="${2:-Y}" ans=""
   local hint="Y/n"
   [[ "$def" == "N" ]] && hint="y/N"
+
   while true; do
-    echo -ne "${CYAN}${q}${NC} (${hint}): "
-    read -r ans || true
+    printf "%b%s%b (%s): " "$CYAN" "$q" "$NC" "$hint" >&4
+    IFS= read -r ans <&3 || ans=""
     ans="${ans:-$def}"
     case "$ans" in
       Y|y) return 0 ;;
       N|n) return 1 ;;
-      *) echo "Kérlek Y vagy N." ;;
+      *) printf "Kérlek Y vagy N.\n" >&4 ;;
     esac
   done
 }
@@ -203,23 +166,15 @@ ask_action() { # ask_action "Apache" default(I/R/S) -> stdout: install/remove/sk
   local ans=""
   local hint="I=Telepít / R=Töröl / S=Kihagy"
 
-  local OUT="/dev/tty"
-  [[ -w /dev/tty ]] || OUT="/dev/stderr"
-
   while true; do
-    printf "%b%s:%b %s (alap: %s): " "$CYAN" "$name" "$NC" "$hint" "$def" >"$OUT"
-    if [[ -r /dev/tty ]]; then
-      IFS= read -r ans </dev/tty || ans=""
-    else
-      IFS= read -r ans || ans=""
-    fi
-
+    printf "%b%s:%b %s (alap: %s): " "$CYAN" "$name" "$NC" "$hint" "$def" >&4
+    IFS= read -r ans <&3 || ans=""
     ans="${ans:-$def}"
     case "$ans" in
       I|i) echo "install"; return 0 ;;
       R|r) echo "remove";  return 0 ;;
       S|s) echo "skip";    return 0 ;;
-      *)   printf "Kérlek I / R / S.\n" >"$OUT" ;;
+      *)   printf "Kérlek I / R / S.\n" >&4 ;;
     esac
   done
 }
@@ -254,6 +209,61 @@ apt_purge() {
   run apt-get autoremove -y || true
   return 0
 }
+
+############################################
+# ZENE (YouTube stream) – START/STOP (JAVÍTOTT)
+############################################
+start_music() {
+  $ENABLE_MUSIC || return 0
+
+  section "Zene"
+
+  # biztosítsuk a kellékeket (nem változtat a telepítéseiden, csak a zene miatt kell)
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    info "Zene: yt-dlp telepítése..."
+    apt_install yt-dlp || { warn "Zene: yt-dlp telepítése nem sikerült."; return 0; }
+  fi
+  if ! command -v mpv >/dev/null 2>&1; then
+    info "Zene: mpv telepítése..."
+    apt_install mpv || { warn "Zene: mpv telepítése nem sikerült."; return 0; }
+  fi
+
+  # stream URL kinyerése
+  local stream_url=""
+  stream_url="$(yt-dlp -f bestaudio -g "$YOUTUBE_URL" 2>>"$LOGFILE" || true)"
+  if [[ -z "$stream_url" ]]; then
+    warn "Zene: nem sikerült kinyerni a stream URL-t a YouTube linkből."
+    return 0
+  fi
+
+  # a lejátszót indítjuk háttérben (nem a run() wrapper-t)
+  mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" >>"$LOGFILE" 2>&1 &
+  MUSIC_PID="$!"
+
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    ok "Megy a zene."
+  else
+    warn "Zene: nem indult el a lejátszás."
+    MUSIC_PID=""
+  fi
+}
+
+stop_music() {
+  if [[ -n "${MUSIC_PID:-}" ]]; then
+    if kill -0 "$MUSIC_PID" 2>/dev/null; then
+      kill "$MUSIC_PID" >/dev/null 2>&1 || true
+      sleep 0.3 || true
+      kill -9 "$MUSIC_PID" >/dev/null 2>&1 || true
+    fi
+    MUSIC_PID=""
+    ok "Zene leállítva."
+  fi
+}
+
+cleanup() {
+  stop_music
+}
+trap cleanup EXIT INT TERM
 
 ############################################
 # FELADAT FUTTATÓ
@@ -697,12 +707,11 @@ print_summary() {
 }
 
 ############################################
-# INTERAKTÍV VÁLASZTÁS (APT + I/R/S)
+# INTERAKTÍV VÁLASZTÁS (ZENE + APT + I/R/S)
 ############################################
 configure_actions() {
   section "Beállítások"
 
-  # ZENE kérdés a legelején (kérésed szerint)
   if ask_yn "Menjen zene induláskor? (YouTube)" "N"; then
     ENABLE_MUSIC=true
   else
@@ -734,9 +743,9 @@ configure_actions() {
 # FŐ FUTÁS
 ############################################
 main() {
+  init_tty
   banner
 
-  # Mindig kérdezünk induláskor (kérésed szerint).
   configure_actions
 
   # Zene indítása (ha kérted)
@@ -757,7 +766,7 @@ main() {
   do_component "Node-RED"   "$ACTION_NODE_RED"    install_node_red    remove_node_red    || all_ok=false
   do_component "UFW"        "$ACTION_UFW"         install_ufw         remove_ufw         || all_ok=false
 
-  # Minden kész -> zene leállítása (kérésed szerint)
+  # minden kész -> zene leállítása (kérésed szerint)
   stop_music
 
   print_summary
