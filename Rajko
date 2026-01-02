@@ -127,39 +127,30 @@ fi
 # ZENE (YouTube stream) – START/STOP
 ############################################
 start_music() {
-  # Csak ha engedélyezve
   $ENABLE_MUSIC || return 0
 
-  # eszköz ellenőrzés: yt-dlp + player (mpv / cvlc / ffplay)
+  section "Zene"
+  # szükséges csomagok telepítése (csak ha kell)
   if ! command -v yt-dlp >/dev/null 2>&1; then
-    warn "Zene: yt-dlp nincs telepítve, nem tudok YouTube-ról streamelni."
-    return 0
+    info "Zene: yt-dlp telepítése..."
+    apt_install yt-dlp || { warn "Zene: yt-dlp telepítése nem sikerült."; return 0; }
+  fi
+  if ! command -v mpv >/dev/null 2>&1; then
+    info "Zene: mpv telepítése..."
+    apt_install mpv || { warn "Zene: mpv telepítése nem sikerült."; return 0; }
   fi
 
+  # stream URL kinyerése
   local stream_url=""
   stream_url="$(yt-dlp -f bestaudio -g "$YOUTUBE_URL" 2>>"$LOGFILE" || true)"
   if [[ -z "$stream_url" ]]; then
-    warn "Zene: nem sikerült lekérni a stream URL-t a YouTube linkből."
+    warn "Zene: nem sikerült kinyerni a stream URL-t a YouTube linkből."
     return 0
   fi
 
-  if command -v mpv >/dev/null 2>&1; then
-    run mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" &
-    MUSIC_PID="$!"
-  elif command -v cvlc >/dev/null 2>&1; then
-    run cvlc --quiet --no-video --gain 1.0 "$stream_url" &
-    MUSIC_PID="$!"
-  elif command -v vlc >/dev/null 2>&1; then
-    run vlc --intf dummy --quiet --no-video --gain 1.0 "$stream_url" &
-    MUSIC_PID="$!"
-  elif command -v ffplay >/dev/null 2>&1; then
-    # ffplay volume: 0-100 (kb)
-    run ffplay -nodisp -autoexit -loglevel quiet -volume "$MUSIC_VOLUME" "$stream_url" &
-    MUSIC_PID="$!"
-  else
-    warn "Zene: nincs lejátszó (mpv/vlc/ffplay)."
-    return 0
-  fi
+  # lejátszás indítása (a lejátszót indítjuk háttérben, nem a run() wrapper-t)
+  mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" >>"$LOGFILE" 2>&1 &
+  MUSIC_PID="$!"
 
   if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
     ok "Megy a zene."
@@ -172,9 +163,9 @@ start_music() {
 stop_music() {
   if [[ -n "${MUSIC_PID:-}" ]]; then
     if kill -0 "$MUSIC_PID" 2>/dev/null; then
-      run kill "$MUSIC_PID" >/dev/null 2>&1 || true
-      run sleep 0.3 || true
-      run kill -9 "$MUSIC_PID" >/dev/null 2>&1 || true
+      kill "$MUSIC_PID" >/dev/null 2>&1 || true
+      sleep 0.3 || true
+      kill -9 "$MUSIC_PID" >/dev/null 2>&1 || true
     fi
     MUSIC_PID=""
     ok "Zene leállítva."
