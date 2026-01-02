@@ -136,23 +136,34 @@ ask_yn() { # ask_yn "Kérdés?" default(Y/N)
   done
 }
 
-ask_action() { # ask_action "Apache" default(I/R/S)
+ask_action() { # ask_action "Apache" default(I/R/S)  -> stdout: install/remove/skip
   local name="$1"
   local def="${2:-I}"
   local ans=""
   local hint="I=Telepít / R=Töröl / S=Kihagy"
+
+  # Interaktív prompt mindig látszódjon: /dev/tty ha van, különben stderr
+  local OUT="/dev/tty"
+  [[ -w /dev/tty ]] || OUT="/dev/stderr"
+
   while true; do
-    echo -ne "${CYAN}${name}:${NC} ${hint} (alap: ${def}): "
-    read -r ans || true
+    printf "%b%s:%b %s (alap: %s): " "$CYAN" "$name" "$NC" "$hint" "$def" >"$OUT"
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r ans </dev/tty || ans=""
+    else
+      IFS= read -r ans || ans=""
+    fi
+
     ans="${ans:-$def}"
     case "$ans" in
       I|i) echo "install"; return 0 ;;
       R|r) echo "remove";  return 0 ;;
       S|s) echo "skip";    return 0 ;;
-      *) echo "Kérlek I / R / S." ;;
+      *)   printf "Kérlek I / R / S.\n" >"$OUT" ;;
     esac
   done
 }
+
 
 ############################################
 # APT WRAPPER
