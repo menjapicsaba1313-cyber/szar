@@ -10,6 +10,12 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ############################################
 LOGFILE="/var/log/showoff_installer.log"
 
+# ZENE (YouTube)
+YOUTUBE_URL="https://www.youtube.com/watch?v=jj0ChLVTpaA&list=RDjj0ChLVTpaA&start_radio=1"
+MUSIC_VOLUME=70
+ENABLE_MUSIC=false
+MUSIC_PID=""
+
 # Node-RED
 NODE_RED_PORT=1880
 NODE_RED_USERDIR="/var/lib/node-red"
@@ -118,6 +124,70 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 ############################################
+# ZENE (YouTube stream) – START/STOP
+############################################
+start_music() {
+  # Csak ha engedélyezve
+  $ENABLE_MUSIC || return 0
+
+  # eszköz ellenőrzés: yt-dlp + player (mpv / cvlc / ffplay)
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    warn "Zene: yt-dlp nincs telepítve, nem tudok YouTube-ról streamelni."
+    return 0
+  fi
+
+  local stream_url=""
+  stream_url="$(yt-dlp -f bestaudio -g "$YOUTUBE_URL" 2>>"$LOGFILE" || true)"
+  if [[ -z "$stream_url" ]]; then
+    warn "Zene: nem sikerült lekérni a stream URL-t a YouTube linkből."
+    return 0
+  fi
+
+  if command -v mpv >/dev/null 2>&1; then
+    run mpv --no-video --quiet --volume="$MUSIC_VOLUME" "$stream_url" &
+    MUSIC_PID="$!"
+  elif command -v cvlc >/dev/null 2>&1; then
+    run cvlc --quiet --no-video --gain 1.0 "$stream_url" &
+    MUSIC_PID="$!"
+  elif command -v vlc >/dev/null 2>&1; then
+    run vlc --intf dummy --quiet --no-video --gain 1.0 "$stream_url" &
+    MUSIC_PID="$!"
+  elif command -v ffplay >/dev/null 2>&1; then
+    # ffplay volume: 0-100 (kb)
+    run ffplay -nodisp -autoexit -loglevel quiet -volume "$MUSIC_VOLUME" "$stream_url" &
+    MUSIC_PID="$!"
+  else
+    warn "Zene: nincs lejátszó (mpv/vlc/ffplay)."
+    return 0
+  fi
+
+  if [[ -n "${MUSIC_PID:-}" ]] && kill -0 "$MUSIC_PID" 2>/dev/null; then
+    ok "Megy a zene."
+  else
+    warn "Zene: nem indult el a lejátszás."
+    MUSIC_PID=""
+  fi
+}
+
+stop_music() {
+  if [[ -n "${MUSIC_PID:-}" ]]; then
+    if kill -0 "$MUSIC_PID" 2>/dev/null; then
+      run kill "$MUSIC_PID" >/dev/null 2>&1 || true
+      run sleep 0.3 || true
+      run kill -9 "$MUSIC_PID" >/dev/null 2>&1 || true
+    fi
+    MUSIC_PID=""
+    ok "Zene leállítva."
+  fi
+}
+
+# Biztos leállítás megszakításkor is
+cleanup() {
+  stop_music
+}
+trap cleanup EXIT INT TERM
+
+############################################
 # IGEN/NEM / 3-ÁLLÁSÚ (I/R/S)
 ############################################
 ask_yn() { # ask_yn "Kérdés?" default(Y/N)
@@ -136,13 +206,12 @@ ask_yn() { # ask_yn "Kérdés?" default(Y/N)
   done
 }
 
-ask_action() { # ask_action "Apache" default(I/R/S)  -> stdout: install/remove/skip
+ask_action() { # ask_action "Apache" default(I/R/S) -> stdout: install/remove/skip
   local name="$1"
   local def="${2:-I}"
   local ans=""
   local hint="I=Telepít / R=Töröl / S=Kihagy"
 
-  # Interaktív prompt mindig látszódjon: /dev/tty ha van, különben stderr
   local OUT="/dev/tty"
   [[ -w /dev/tty ]] || OUT="/dev/stderr"
 
@@ -163,7 +232,6 @@ ask_action() { # ask_action "Apache" default(I/R/S)  -> stdout: install/remove/s
     esac
   done
 }
-
 
 ############################################
 # APT WRAPPER
@@ -190,7 +258,6 @@ apt_install() {
 }
 
 apt_purge() {
-  # purge + autoremove
   apt_update_once || true
   run apt-get purge -y "$@" || return 1
   run apt-get autoremove -y || true
@@ -235,7 +302,6 @@ remove_apache() {
 
 remove_php() {
   section "PHP – törlés"
-  # óvatosan: csak a tipikus csomagok
   local pkgs=(php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip libapache2-mod-php)
   apt_purge "${pkgs[@]}" >/dev/null 2>&1 || true
   run rm -f /var/www/html/info.php >/dev/null 2>&1 || true
@@ -249,7 +315,6 @@ remove_mariadb() {
   if dpkg -s mariadb-server >/dev/null 2>&1; then
     apt_purge mariadb-server mariadb-client >/dev/null 2>&1 || true
   fi
-  # adatdir törlése opcionális – biztonsági okból nem töröljük automatikusan
   warn "MariaDB adatkönyvtárat nem töröltem automatikusan (/var/lib/mysql)."
   set_status "MariaDB" "REM" "eltávolítva"
   ok "MariaDB eltávolítva."
@@ -312,7 +377,6 @@ remove_node_red() {
     run_task "Node-RED (npm remove -g)" npm remove -g node-red || true
   fi
 
-  # user + userdir: csak ha rákérdezünk (adatvesztés!)
   if [[ -d "$NODE_RED_USERDIR" ]]; then
     if ask_yn "Töröljem a Node-RED userDir-t is? (${NODE_RED_USERDIR})" "N"; then
       run rm -rf "$NODE_RED_USERDIR" >/dev/null 2>&1 || true
@@ -322,7 +386,6 @@ remove_node_red() {
     fi
   fi
 
-  # nodered user törlés opcionális
   if id -u nodered >/dev/null 2>&1; then
     if ask_yn "Töröljem a 'nodered' felhasználót is?" "N"; then
       run userdel -r nodered >/dev/null 2>&1 || true
@@ -361,7 +424,6 @@ install_apache() {
 
 install_php() {
   section "PHP – telepítés"
-
   local pkgs=(php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip libapache2-mod-php)
   local any_missing=false
   for p in "${pkgs[@]}"; do
@@ -389,7 +451,6 @@ EOF
 
 install_mariadb() {
   section "MariaDB – telepítés"
-
   if dpkg -s mariadb-server >/dev/null 2>&1; then
     ok "MariaDB már telepítve."
   else
@@ -416,7 +477,6 @@ install_mariadb() {
 
 install_phpmyadmin() {
   section "phpMyAdmin – telepítés"
-
   if dpkg -s phpmyadmin >/dev/null 2>&1; then
     ok "phpMyAdmin már telepítve."
     set_status "phpMyAdmin" "OK" "telepítve"
@@ -443,7 +503,6 @@ install_phpmyadmin() {
 
 install_mosquitto() {
   section "Mosquitto – telepítés"
-
   if dpkg -s mosquitto >/dev/null 2>&1; then
     ok "Mosquitto már telepítve."
   else
@@ -464,7 +523,6 @@ install_mosquitto() {
 
 install_ssh() {
   section "SSH – telepítés"
-
   if dpkg -s openssh-server >/dev/null 2>&1; then
     ok "OpenSSH Server már telepítve."
   else
@@ -485,7 +543,6 @@ install_ssh() {
 
 install_ufw() {
   section "UFW – telepítés"
-
   if dpkg -s ufw >/dev/null 2>&1; then
     ok "UFW már telepítve."
   else
@@ -502,7 +559,6 @@ install_ufw() {
   $UFW_ALLOW_MQTT     && run ufw allow 1883/tcp >/dev/null 2>&1 || true
   $UFW_ALLOW_NODE_RED && run ufw allow "${NODE_RED_PORT}/tcp" >/dev/null 2>&1 || true
 
-  # Debianon előfordul "false-negative" – próbáljuk biztosra:
   run systemctl enable --now ufw >/dev/null 2>&1 || true
   run ufw --force enable || true
   run sleep 1 || true
@@ -618,14 +674,9 @@ UNIT
 ############################################
 do_component() { # do_component "Apache" "$ACTION_APACHE" install_fn remove_fn
   local name="$1" action="$2" install_fn="$3" remove_fn="$4"
-
   case "$action" in
-    install)
-      "$install_fn"
-      ;;
-    remove)
-      "$remove_fn"
-      ;;
+    install) "$install_fn" ;;
+    remove)  "$remove_fn" ;;
     skip)
       set_status "$name" "SKIP" "kihagyva"
       warn "${name} kihagyva."
@@ -655,10 +706,17 @@ print_summary() {
 }
 
 ############################################
-# INTERAKTÍV VÁLASZTÁS (I/R/S)
+# INTERAKTÍV VÁLASZTÁS (APT + I/R/S)
 ############################################
 configure_actions() {
   section "Beállítások"
+
+  # ZENE kérdés a legelején (kérésed szerint)
+  if ask_yn "Menjen zene induláskor? (YouTube)" "N"; then
+    ENABLE_MUSIC=true
+  else
+    ENABLE_MUSIC=false
+  fi
 
   if ask_yn "Futtassunk APT update-et a telepítések előtt?" "Y"; then
     DO_APT_UPDATE=true
@@ -690,20 +748,26 @@ main() {
   # Mindig kérdezünk induláskor (kérésed szerint).
   configure_actions
 
+  # Zene indítása (ha kérted)
+  start_music
+
   hr
   ok "Műveletek indulnak."
   hr
 
   local all_ok=true
 
-  do_component "Apache"    "$ACTION_APACHE"    install_apache     remove_apache     || all_ok=false
-  do_component "PHP"       "$ACTION_PHP"       install_php        remove_php        || all_ok=false
-  do_component "MariaDB"   "$ACTION_MARIADB"   install_mariadb    remove_mariadb    || all_ok=false
-  do_component "phpMyAdmin" "$ACTION_PHPMYADMIN" install_phpmyadmin remove_phpmyadmin || all_ok=false
-  do_component "Mosquitto" "$ACTION_MOSQUITTO" install_mosquitto  remove_mosquitto  || all_ok=false
-  do_component "SSH"       "$ACTION_SSH"       install_ssh        remove_ssh        || all_ok=false
-  do_component "Node-RED"  "$ACTION_NODE_RED"  install_node_red   remove_node_red   || all_ok=false
-  do_component "UFW"       "$ACTION_UFW"       install_ufw        remove_ufw        || all_ok=false
+  do_component "Apache"     "$ACTION_APACHE"      install_apache      remove_apache      || all_ok=false
+  do_component "PHP"        "$ACTION_PHP"         install_php         remove_php         || all_ok=false
+  do_component "MariaDB"    "$ACTION_MARIADB"     install_mariadb     remove_mariadb     || all_ok=false
+  do_component "phpMyAdmin" "$ACTION_PHPMYADMIN"  install_phpmyadmin  remove_phpmyadmin  || all_ok=false
+  do_component "Mosquitto"  "$ACTION_MOSQUITTO"   install_mosquitto   remove_mosquitto   || all_ok=false
+  do_component "SSH"        "$ACTION_SSH"         install_ssh         remove_ssh         || all_ok=false
+  do_component "Node-RED"   "$ACTION_NODE_RED"    install_node_red    remove_node_red    || all_ok=false
+  do_component "UFW"        "$ACTION_UFW"         install_ufw         remove_ufw         || all_ok=false
+
+  # Minden kész -> zene leállítása (kérésed szerint)
+  stop_music
 
   print_summary
 
