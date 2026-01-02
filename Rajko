@@ -485,8 +485,29 @@ install_mariadb() {
     apt_install mariadb-server || { set_status "MariaDB" "FAIL" "apt install"; return 1; }
   fi
 
+  # Alap indulás
   run systemctl enable --now mariadb || true
 
+  # --- JAVÍTÁS: tipikus Debian/VM self-heal ---
+  # 1) /run/mysqld (socket/pid könyvtár) létrehozás + jogosultság
+  run mkdir -p /run/mysqld >/dev/null 2>&1 || true
+  run chown mysql:mysql /run/mysqld >/dev/null 2>&1 || true
+  run chmod 755 /run/mysqld >/dev/null 2>&1 || true
+
+  # 2) /var/lib/mysql jogosultság rendbetétel (gyakori hiba)
+  if [[ -d /var/lib/mysql ]]; then
+    run chown -R mysql:mysql /var/lib/mysql >/dev/null 2>&1 || true
+    run chmod 750 /var/lib/mysql >/dev/null 2>&1 || true
+  fi
+
+  # 3) Aria log beragadás (crash / vm poweroff után)
+  run rm -f /var/lib/mysql/aria_log_control /var/lib/mysql/aria_log.* >/dev/null 2>&1 || true
+
+  # 4) újraindítás
+  run systemctl restart mariadb || true
+  # --- JAVÍTÁS VÉGE ---
+
+  # Root jelszó (ha megadtad)
   if [[ -n "$MARIADB_ROOT_PASSWORD" ]]; then
     run mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}'; FLUSH PRIVILEGES;" || true
     ok "MariaDB root jelszó megkísérelve beállítani."
@@ -497,11 +518,16 @@ install_mariadb() {
     ok "MariaDB fut."
     return 0
   else
+    # Extra diagnosztika a logba + képernyőre
+    warn "MariaDB nem aktív. Napló részlet a logban és itt:"
+    run systemctl status mariadb --no-pager -l || true
+    run journalctl -u mariadb --no-pager -n 120 || true
+
     set_status "MariaDB" "FAIL" "service nem aktív"
-    warn "MariaDB nem aktív."
     return 1
   fi
 }
+
 
 install_phpmyadmin() {
   section "phpMyAdmin – telepítés"
