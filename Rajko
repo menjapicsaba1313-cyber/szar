@@ -10,7 +10,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ############################################
 LOGFILE="/var/log/showoff_installer.log"
 
-# Komponensek (kapcsolók)
+# Komponensek (alapért. bekapcsolva)
 ENABLE_APACHE=true
 ENABLE_PHP=true
 ENABLE_MARIADB=true
@@ -23,14 +23,12 @@ ENABLE_NODE_RED=true
 # Node-RED
 NODE_RED_PORT=1880
 NODE_RED_USERDIR="/var/lib/node-red"
-
-# PHP
-PHP_VERSION_DEFAULT=""
+NODE_LTS_MAJOR="20"   # 18 vagy 20 javasolt
 
 # MariaDB
 MARIADB_ROOT_PASSWORD=""   # ha üres, nem állítunk jelszót automatikusan
 
-# UFW
+# UFW nyitások
 UFW_ALLOW_SSH=true
 UFW_ALLOW_HTTP=true
 UFW_ALLOW_HTTPS=true
@@ -51,7 +49,7 @@ declare -A STATUS
 declare -a ORDER
 ORDER+=( "Apache" "PHP" "MariaDB" "phpMyAdmin" "Mosquitto" "SSH" "UFW" "Node-RED" )
 
-set_status() { # set_status "Apache" "OK|SKIP|FAIL" "üzenet"
+set_status() { # set_status "Apache" "OK|SKIP|FAIL" "megjegyzés"
   local k="$1" v="$2" m="${3:-}"
   STATUS["$k"]="$v|$m"
 }
@@ -101,7 +99,7 @@ section() {
 hr() { echo -e "${GRAY}────────────────────────────────────────────────────────────${NC}"; }
 
 ############################################
-# KÖTELEZŐ: bash + root
+# ROOT CHECK
 ############################################
 if [[ -z "${BASH_VERSION:-}" ]]; then
   echo "Ezt bash-al kell futtatni: bash ./install.sh"
@@ -116,7 +114,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 ############################################
-# KÉNYELMI: apt wrapper
+# APT WRAPPER
 ############################################
 apt_update_once_done=false
 apt_update_once() {
@@ -139,7 +137,7 @@ apt_install() {
 is_debian_like() { [[ -f /etc/debian_version ]]; }
 
 ############################################
-# VÁLASZTÓK (igen/nem)
+# IGEN/NEM KÉRDÉS
 ############################################
 ask_yn() { # ask_yn "Kérdés?" default(Y/N)
   local q="$1" def="${2:-Y}" ans=""
@@ -173,6 +171,14 @@ run_task() { # run_task "név" command...
 }
 
 ############################################
+# KÖZÖS: ports / gyors státusz
+############################################
+is_service_active() {
+  local svc="$1"
+  systemctl is-active --quiet "$svc" 2>/dev/null
+}
+
+############################################
 # TELEPÍTŐK
 ############################################
 install_apache() {
@@ -190,13 +196,13 @@ install_apache() {
   fi
 
   run systemctl enable --now apache2 || true
-  if systemctl is-active --quiet apache2; then
+  if is_service_active apache2; then
     set_status "Apache" "OK" "fut"
     ok "Apache fut."
     return 0
   else
     set_status "Apache" "FAIL" "service nem aktív"
-    warn "Apache nem aktív. Log: systemctl status apache2"
+    warn "Apache nem aktív. (systemctl status apache2)"
     return 1
   fi
 }
@@ -209,7 +215,6 @@ install_php() {
     return 0
   fi
 
-  # Debian/Ubuntu default PHP csomagok
   local pkgs=(php php-cli php-fpm php-mysql php-xml php-mbstring php-curl php-zip libapache2-mod-php)
   local any_missing=false
   for p in "${pkgs[@]}"; do
@@ -222,7 +227,6 @@ install_php() {
     ok "PHP csomagok már telepítve."
   fi
 
-  # Info oldal
   if [[ -d /var/www/html ]]; then
     cat > /var/www/html/info.php <<'EOF'
 <?php
@@ -252,14 +256,12 @@ install_mariadb() {
 
   run systemctl enable --now mariadb || true
 
-  # Opcionális root jelszó beállítás (csak ha megadod a változóban)
   if [[ -n "$MARIADB_ROOT_PASSWORD" ]]; then
-    # Modern MariaDB-n root gyakran unix_socket auth; ezt megpróbáljuk átállítani.
     run mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}'; FLUSH PRIVILEGES;" || true
     ok "MariaDB root jelszó megkísérelve beállítani."
   fi
 
-  if systemctl is-active --quiet mariadb; then
+  if is_service_active mariadb; then
     set_status "MariaDB" "OK" "fut"
     ok "MariaDB fut."
     return 0
@@ -278,7 +280,6 @@ install_phpmyadmin() {
     return 0
   fi
 
-  # Debian/Ubuntu csomag (noninteractive-ban lehet kérdezős; előre seedeljük amit tudunk)
   if dpkg -s phpmyadmin >/dev/null 2>&1; then
     ok "phpMyAdmin már telepítve."
     set_status "phpMyAdmin" "OK" "telepítve"
@@ -287,7 +288,6 @@ install_phpmyadmin() {
 
   apt_update_once || { set_status "phpMyAdmin" "FAIL" "apt update"; return 1; }
 
-  # Preseed: Apache2 választás + dbconfig-common alap
   echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2" | run debconf-set-selections || true
   echo "phpmyadmin phpmyadmin/dbconfig-install boolean true" | run debconf-set-selections || true
 
@@ -298,7 +298,7 @@ install_phpmyadmin() {
     set_status "phpMyAdmin" "OK" "telepítve"
     return 0
   else
-    warn "phpMyAdmin telepítés sikertelen (gyakran debconf miatt). Részletek a logban."
+    warn "phpMyAdmin telepítés sikertelen (gyakran debconf miatt)."
     set_status "phpMyAdmin" "FAIL" "apt install"
     return 1
   fi
@@ -319,7 +319,7 @@ install_mosquitto() {
   fi
 
   run systemctl enable --now mosquitto || true
-  if systemctl is-active --quiet mosquitto; then
+  if is_service_active mosquitto; then
     set_status "Mosquitto" "OK" "fut"
     ok "Mosquitto fut (1883)."
     return 0
@@ -338,7 +338,6 @@ install_ssh() {
     return 0
   fi
 
-  # Debian/Ubuntu: openssh-server
   if dpkg -s openssh-server >/dev/null 2>&1; then
     ok "OpenSSH Server már telepítve."
   else
@@ -346,7 +345,7 @@ install_ssh() {
   fi
 
   run systemctl enable --now ssh || run systemctl enable --now sshd || true
-  if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+  if is_service_active ssh || is_service_active sshd; then
     set_status "SSH" "OK" "fut"
     ok "SSH fut."
     return 0
@@ -371,27 +370,60 @@ install_ufw() {
     apt_install ufw || { set_status "UFW" "FAIL" "apt install"; return 1; }
   fi
 
-  # alap: deny incoming, allow outgoing
   run ufw --force reset || true
   run ufw default deny incoming || true
   run ufw default allow outgoing || true
 
-  $UFW_ALLOW_SSH   && run ufw allow OpenSSH >/dev/null 2>&1 || true
-  $UFW_ALLOW_HTTP  && run ufw allow 80/tcp >/dev/null 2>&1 || true
-  $UFW_ALLOW_HTTPS && run ufw allow 443/tcp >/dev/null 2>&1 || true
-  $UFW_ALLOW_MQTT  && run ufw allow 1883/tcp >/dev/null 2>&1 || true
-  $UFW_ALLOW_NODE_RED && run ufw allow "${NODE_RED_PORT}/tcp" >/dev/null 2>&1 || true
+  $UFW_ALLOW_SSH       && run ufw allow OpenSSH >/dev/null 2>&1 || true
+  $UFW_ALLOW_HTTP      && run ufw allow 80/tcp >/dev/null 2>&1 || true
+  $UFW_ALLOW_HTTPS     && run ufw allow 443/tcp >/dev/null 2>&1 || true
+  $UFW_ALLOW_MQTT      && run ufw allow 1883/tcp >/dev/null 2>&1 || true
+  $UFW_ALLOW_NODE_RED  && run ufw allow "${NODE_RED_PORT}/tcp" >/dev/null 2>&1 || true
 
+  # Debianon néha false-negative az "active" ellenőrzés, ezért:
+  run systemctl enable --now ufw >/dev/null 2>&1 || true
   run ufw --force enable || true
-  if run ufw status | grep -q "Status: active"; then
+  run sleep 1 || true
+
+  if ufw status 2>/dev/null | grep -qi "active"; then
     set_status "UFW" "OK" "aktív"
     ok "UFW aktív."
     return 0
   else
-    set_status "UFW" "FAIL" "nem aktív"
-    warn "UFW nem aktív."
+    # Nem állítjuk FAIL-re automatikusan, mert gyakran csak UI/VM issue.
+    warn "UFW státusz nem egyértelmű (lehet false-negative). Ellenőrzés: ufw status verbose"
+    set_status "UFW" "FAIL" "nem aktív (vagy false-negative)"
     return 1
   fi
+}
+
+install_nodejs_lts_nodesource() {
+  # Node.js LTS NodeSource-ból (apt repo helyett) – Node-RED miatt kritikus.
+  section "Node.js LTS (NodeSource)"
+
+  # Ha már van node, nézzük a verziót: Node-RED 3.x-hez javasolt >= 18
+  if command -v node >/dev/null 2>&1; then
+    local v
+    v="$(node -v 2>/dev/null || true)"
+    ok "Node már telepítve: ${v}"
+    return 0
+  fi
+
+  apt_install curl ca-certificates gnupg || return 1
+
+  # setup script
+  if ! run bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_LTS_MAJOR}.x | bash -"; then
+    return 1
+  fi
+
+  apt_install nodejs || return 1
+
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    ok "Node.js telepítve: $(node -v) | npm: $(npm -v)"
+    return 0
+  fi
+
+  return 1
 }
 
 install_node_red() {
@@ -402,8 +434,12 @@ install_node_red() {
     return 0
   fi
 
-  # Node.js + npm
-  apt_install curl ca-certificates nodejs npm || { set_status "Node-RED" "FAIL" "nodejs/npm"; return 1; }
+  # Node.js LTS (NodeSource)
+  if ! install_nodejs_lts_nodesource; then
+    set_status "Node-RED" "FAIL" "nodejs/npm"
+    fail "Node.js / npm telepítés sikertelen."
+    return 1
+  fi
 
   # Node-RED telepítés
   if ! command -v node-red >/dev/null 2>&1; then
@@ -413,22 +449,22 @@ install_node_red() {
     ok "Node-RED parancs már elérhető."
   fi
 
-  # Derítsük ki a pontos bináris útvonalat (kritikus systemd-hez)
+  # Abszolút bináris útvonal (systemd miatt kritikus)
   local NODE_RED_BIN
   NODE_RED_BIN="$(command -v node-red || true)"
   if [[ -z "$NODE_RED_BIN" ]]; then
-    fail "Node-RED bináris nem található (command -v node-red üres)."
     set_status "Node-RED" "FAIL" "bináris hiány"
+    fail "Node-RED bináris nem található (command -v node-red üres)."
     return 1
   fi
   ok "Node-RED bináris: $NODE_RED_BIN"
 
-  # Dedikált felhasználó + userDir
+  # Dedikált user + userDir
   id -u nodered >/dev/null 2>&1 || run useradd -r -m -s /usr/sbin/nologin nodered || true
   run mkdir -p "$NODE_RED_USERDIR" || true
   run chown -R nodered:nodered "$NODE_RED_USERDIR" || true
 
-  # Systemd unit (ABSZOLÚT ExecStart + PATH fix)
+  # Systemd unit
   cat > /etc/systemd/system/nodered.service <<UNIT
 [Unit]
 Description=Node-RED
@@ -440,6 +476,7 @@ User=nodered
 Group=nodered
 WorkingDirectory=${NODE_RED_USERDIR}
 
+# npm -g gyakran /usr/local/bin-be telepít, ezt systemd alatt külön meg kell adni
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="NODE_RED_OPTIONS=--userDir ${NODE_RED_USERDIR} --port ${NODE_RED_PORT}"
 
@@ -456,20 +493,20 @@ UNIT
   run systemctl daemon-reload || true
   run systemctl enable --now nodered.service || true
 
-  if systemctl is-active --quiet nodered.service 2>/dev/null; then
+  if is_service_active nodered.service; then
     set_status "Node-RED" "OK" "fut"
     ok "Node-RED fut (port: ${NODE_RED_PORT})."
     return 0
   fi
 
   warn "Node-RED nem indult el. Journal részlet:"
-  run journalctl -u nodered.service --no-pager -n 120 || true
+  run journalctl -u nodered.service --no-pager -n 160 || true
   set_status "Node-RED" "FAIL" "service nem aktív"
   return 1
 }
 
 ############################################
-# ÖSSZEGZÉS TÁBLA
+# ÖSSZEGZÉS
 ############################################
 print_summary() {
   section "Állapot összegzés"
@@ -486,7 +523,7 @@ print_summary() {
 }
 
 ############################################
-# INTERAKTÍV MENÜ (opcionális)
+# INTERAKTÍV VÁLASZTÁS
 ############################################
 configure_toggles() {
   section "Komponensek kiválasztása"
@@ -511,7 +548,6 @@ main() {
     warn "Ez a script Debian/Ubuntu alapra készült. Lehet, hogy nem fog működni."
   fi
 
-  # kérdezzük meg, legyen-e interaktív kiválasztás
   if ask_yn "Szeretnéd kiválasztani, mit telepítsünk (interaktív mód)?" "Y"; then
     configure_toggles
   fi
