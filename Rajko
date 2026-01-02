@@ -479,54 +479,63 @@ EOF
 
 install_mariadb() {
   section "MariaDB – telepítés"
-  if dpkg -s mariadb-server >/dev/null 2>&1; then
-    ok "MariaDB már telepítve."
+
+  if ! dpkg -s mariadb-server >/dev/null 2>&1; then
+    apt_install mariadb-server || {
+      set_status "MariaDB" "FAIL" "apt install"
+      return 1
+    }
   else
-    apt_install mariadb-server || { set_status "MariaDB" "FAIL" "apt install"; return 1; }
+    ok "MariaDB már telepítve."
   fi
 
-  # Alap indulás
-  run systemctl enable --now mariadb || true
+  # --- KRITIKUS JAVÍTÁS BLOKK ---
 
-  # --- JAVÍTÁS: tipikus Debian/VM self-heal ---
-  # 1) /run/mysqld (socket/pid könyvtár) létrehozás + jogosultság
-  run mkdir -p /run/mysqld >/dev/null 2>&1 || true
-  run chown mysql:mysql /run/mysqld >/dev/null 2>&1 || true
-  run chmod 755 /run/mysqld >/dev/null 2>&1 || true
+  # 1) runtime dir
+  run mkdir -p /run/mysqld || true
+  run chown mysql:mysql /run/mysqld || true
+  run chmod 755 /run/mysqld || true
 
-  # 2) /var/lib/mysql jogosultság rendbetétel (gyakori hiba)
+  # 2) adatkönyvtár jogosultság
   if [[ -d /var/lib/mysql ]]; then
-    run chown -R mysql:mysql /var/lib/mysql >/dev/null 2>&1 || true
-    run chmod 750 /var/lib/mysql >/dev/null 2>&1 || true
+    run chown -R mysql:mysql /var/lib/mysql || true
+    run chmod 750 /var/lib/mysql || true
   fi
 
-  # 3) Aria log beragadás (crash / vm poweroff után)
+  # 3) Aria / InnoDB crash cleanup
   run rm -f /var/lib/mysql/aria_log_control /var/lib/mysql/aria_log.* >/dev/null 2>&1 || true
+  run rm -f /var/lib/mysql/ib_logfile* >/dev/null 2>&1 || true
 
-  # 4) újraindítás
-  run systemctl restart mariadb || true
-  # --- JAVÍTÁS VÉGE ---
-
-  # Root jelszó (ha megadtad)
-  if [[ -n "$MARIADB_ROOT_PASSWORD" ]]; then
-    run mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}'; FLUSH PRIVILEGES;" || true
-    ok "MariaDB root jelszó megkísérelve beállítani."
+  # 4) HA MÉG NINCS INITIALIZÁLVA → bootstrap
+  if [[ ! -d /var/lib/mysql/mysql ]]; then
+    warn "MariaDB adatbázis nem inicializált – bootstrap indul."
+    run mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql || {
+      set_status "MariaDB" "FAIL" "init db"
+      return 1
+    }
   fi
 
+  # 5) indulás
+  run systemctl daemon-reexec || true
+  run systemctl enable mariadb || true
+  run systemctl restart mariadb || true
+
+  # 6) ellenőrzés
   if is_service_active mariadb; then
     set_status "MariaDB" "OK" "fut"
     ok "MariaDB fut."
     return 0
-  else
-    # Extra diagnosztika a logba + képernyőre
-    warn "MariaDB nem aktív. Napló részlet a logban és itt:"
-    run systemctl status mariadb --no-pager -l || true
-    run journalctl -u mariadb --no-pager -n 120 || true
-
-    set_status "MariaDB" "FAIL" "service nem aktív"
-    return 1
   fi
+
+  # ha ide jutunk: HARD FAIL → logoljuk
+  warn "MariaDB továbbra sem aktív – részletek:"
+  run systemctl status mariadb --no-pager -l || true
+  run journalctl -u mariadb --no-pager -n 150 || true
+
+  set_status "MariaDB" "FAIL" "service nem aktív"
+  return 1
 }
+
 
 
 install_phpmyadmin() {
